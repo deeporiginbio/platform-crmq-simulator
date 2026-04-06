@@ -9,6 +9,9 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'CRMQ Virtual Cluster Simulator',
   description: 'Cost & Resource Management Queue — Priority Scheduling Simulator',
+  icons: {
+    icon: '/favicon.ico',
+  },
 };
 
 export const RootLayout = ({
