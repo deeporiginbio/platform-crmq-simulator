@@ -34,18 +34,9 @@ jobs:
         working-directory: crmq-simulator
         run: npm run build
 
-      - name: Assemble site
-        run: |
-          mkdir -p _site/crmq-simulator
-          # Copy root-level static files
-          cp index.html simulator.html scheduler.js virtual-cluster.js _site/
-          [ -f crmq-simulator-preview.html ] && cp crmq-simulator-preview.html _site/
-          # Copy Next.js static export
-          cp -r crmq-simulator/out/* _site/crmq-simulator/
-
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: _site
+          path: crmq-simulator/out
 
   deploy:
     needs: build

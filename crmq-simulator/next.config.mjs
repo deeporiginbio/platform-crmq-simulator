@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'export',
-  basePath: '/platform-crmq-simulator/crmq-simulator',
+  basePath: '/platform-crmq-simulator',
   images: {
     unoptimized: true,
   },
