@@ -1,0 +1,82 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.root {
+  min-height: 100vh;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.timeDisplay {
+  color: #D2D5DB;
+  background: #212936;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.speedSelect {
+  background: #394050;
+  color: white;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid #4D5461;
+}
+
+.reservationBanner {
+  background: linear-gradient(90deg, rgba(118, 56, 229, 0.13), rgba(134, 56, 245, 0.19));
+  border: 1px solid rgba(134, 56, 245, 0.5);
+  border-radius: 8px;
+  padding: 8px 16px;
+}
+
+.pulseContainer {
+  position: relative;
+  width: 12px;
+  height: 12px;
+}
+
+.pulseRing {
+  position: absolute;
+  inset: 0;
+  background: #9E6FF6;
+  border-radius: 50%;
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+.pulseDot {
+  position: absolute;
+  inset: 0;
+  background: #9E6FF6;
+  border-radius: 50%;
+}
+
+.reservCode {
+  background: rgba(118, 56, 229, 0.5);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.mainGrid {
+  display: grid;
+  grid-template-columns: 3fr 5fr 4fr;
+  gap: 12px;
+}
+
+.colLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.colCenter {
+  /* queue panel fills this column */
+}
+
+.colRight {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

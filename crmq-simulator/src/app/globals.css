@@ -1,0 +1,47 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+@import '@mantine/core/styles.css';
+
+:root {
+  /* Light theme matching platform-ui */
+  --simulator-bg: #F7F8FA;        /* light grey page background */
+  --card-bg: #FFFFFF;              /* white cards */
+  --card-border: #D2D5DB;         /* grey.3 */
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --text-primary: #131927;        /* grey.9 */
+  --text-secondary: #4D5461;      /* grey.6 */
+  --text-muted: #6D717F;          /* grey.5 */
+
+  /* Platform-ui indigo accent */
+  --accent-primary: #4B6AF1;      /* indigo.5 */
+  --accent-light: #E1E6FF;        /* indigo.0 */
+  --accent-bg: rgba(75, 106, 241, 0.08);
+
+  /* Status colors from platform-ui */
+  --color-success: #14C17B;       /* green.5 */
+  --color-success-light: #F3FBF8; /* green.0 */
+  --color-error: #EE443F;         /* red.5 */
+  --color-error-light: #FDECEC;   /* red.0 */
+  --color-warning: #FFC825;       /* yellow.5 */
+  --color-warning-light: #FFFCF3; /* yellow.0 */
+  --color-info: #5B7BF4;          /* blue.6 */
+  --color-info-light: #EEF2FF;    /* blue.0 */
+}
+
+body {
+  background: var(--simulator-bg);
+  color: var(--text-primary);
+  font-family: 'Source Sans 3', Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+  margin: 0;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #F3F4F6; }
+::-webkit-scrollbar-thumb { background: #D2D5DB; border-radius: 2px; }
+
+/* Pulse animation for reservation mode */
+@keyframes pulse-ring {
+  0% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.6); }
+}

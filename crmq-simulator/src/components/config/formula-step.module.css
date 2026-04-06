@@ -1,0 +1,57 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.formulaCard {
+  padding: 12px 16px;
+  border: 1.5px solid var(--mantine-color-grey-2);
+  border-radius: 10px;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+}
+
+.formulaCard:hover {
+  border-color: var(--mantine-color-indigo-3);
+}
+
+.formulaCardSelected {
+  border-color: var(--mantine-color-indigo-5);
+  background: var(--mantine-color-indigo-0);
+  box-shadow: 0 0 0 1px var(--mantine-color-indigo-3);
+}
+
+.formulaIcon {
+  font-size: 22px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.radioIndicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--mantine-color-grey-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+
+.radioIndicatorSelected {
+  border-color: var(--mantine-color-indigo-6);
+}
+
+.radioInner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mantine-color-indigo-6);
+}
+
+.paramForm {
+  padding: 16px;
+  border: 1px solid var(--mantine-color-grey-2);
+  border-radius: 10px;
+  background: var(--mantine-color-grey-0);
+}

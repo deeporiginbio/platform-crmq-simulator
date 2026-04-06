@@ -1,0 +1,102 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.root {
+  min-height: 100vh;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.timeDisplay {
+  color: var(--text-primary);
+  background: #F3F4F6;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid #D2D5DB;
+}
+
+.speedSelect {
+  background: #FFFFFF;
+  color: var(--text-primary);
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid #D2D5DB;
+}
+
+.configSummary {
+  background: #F9FAFB;
+  border: 1px solid #E5E7EA;
+  border-radius: 8px;
+  padding: 8px 14px;
+  flex-wrap: wrap;
+}
+
+.reservationBanner {
+  background: linear-gradient(90deg, rgba(118, 56, 229, 0.06), rgba(134, 56, 245, 0.10));
+  border: 1px solid rgba(134, 56, 245, 0.3);
+  border-radius: 8px;
+  padding: 8px 16px;
+}
+
+.pulseContainer {
+  position: relative;
+  width: 12px;
+  height: 12px;
+}
+
+.pulseRing {
+  position: absolute;
+  inset: 0;
+  background: #8C56F2;
+  border-radius: 50%;
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+.pulseDot {
+  position: absolute;
+  inset: 0;
+  background: #8C56F2;
+  border-radius: 50%;
+}
+
+.reservCode {
+  background: rgba(118, 56, 229, 0.15);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.mainGrid {
+  display: grid;
+  grid-template-columns: 2.5fr 5fr 4fr;
+  gap: 16px;
+}
+
+.colLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.colCenter {
+  /* queue panel fills this column */
+}
+
+.colRight {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}

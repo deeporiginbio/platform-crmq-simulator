@@ -1,0 +1,38 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: var(--card-shadow);
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.predictionCard {
+  background: #F9FAFB;
+  border: 1px solid #E5E7EA;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.vcBadge {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.footer {
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid #E5E7EA;
+  padding-top: 8px;
+}

@@ -1,0 +1,358 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+/**
+ * CRMQ Benchmark — Pluggable Scoring Formula Registry
+ * ======================================================
+ * Decouples the scoring function from the scheduler so that:
+ *
+ *   1. The DES engine can swap formulas without touching scheduler.ts
+ *   2. New formulas (DRF, CFS-vruntime, normalized weighted-sum) can be
+ *      added by implementing ScoringFormula and registering them
+ *   3. Benchmark runs can compare formulas side-by-side
+ *
+ * The existing calcScore() in scheduler.ts remains the "production" scorer.
+ * This registry provides benchmark-only alternatives that don't change
+ * the live visual simulator until explicitly promoted.
+ *
+ * § 4.2 of the research report recommends:
+ *   - Normalized weighted-sum with logarithmic aging
+ *   - DRF for org-level fairness
+ *   - Jain's Fairness Index > 0.85
+ */
+
+import type { Job, CRMQConfig, Org, OrgUsageMap, Resources } from '../types';
+import { getJobPoolType } from '../types';
+
+// ── Scoring Function Interface ────────────────────────────────────────────
+
+/**
+ * A scoring function takes a job and context, returns a numeric score.
+ * Higher score = higher priority (dispatched sooner).
+ */
+export type ScoreFn = (
+  job: Job,
+  now: number,
+  config: CRMQConfig,
+  orgs: Org[],
+  /** Optional: current org resource usage (needed for DRF) */
+  orgUsage?: OrgUsageMap,
+) => number;
+
+/**
+ * A registered scoring formula with metadata for the benchmark UI.
+ */
+export interface ScoringFormula {
+  id: string;
+  name: string;
+  description: string;
+  /** Which research report section recommends this */
+  reference: string;
+  /** The actual scoring function */
+  score: ScoreFn;
+  /** Default parameters (for display / config UI) */
+  defaultParams: Record<string, number>;
+}
+
+// ── Built-in Formulas ─────────────────────────────────────────────────────
+
+/**
+ * Current production formula (for baseline comparison).
+ * score = org.priority × orgWeight + userP × userWeight + toolP × toolWeight + wait × agingFactor
+ */
+const currentWeightedScore: ScoringFormula = {
+  id: 'current_weighted',
+  name: 'Current Weighted Score (Baseline)',
+  description: 'Linear additive formula with fixed weights. Uses linear aging. The current production formula.',
+  reference: '§1 (current implementation)',
+  score: (job, now, config, orgs) => {
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const wait = Math.max(0, now - job.enqueuedAt);
+    const s = config.scoring;
+    return (
+      org.priority * s.orgWeight +
+      job.userPriority * s.userWeight +
+      job.toolPriority * s.toolWeight +
+      wait * s.agingFactor
+    );
+  },
+  defaultParams: { orgWeight: 10000, userWeight: 1000, toolWeight: 100, agingFactor: 5 },
+};
+
+/**
+ * Normalized weighted-sum with logarithmic aging (§4.2 recommendation).
+ *
+ * score = w_tier × tier_factor(org) + w_age × log_age(wait) +
+ *         w_user × norm(userP) + w_tool × norm(toolP)
+ *
+ * All weights sum to 1.0.
+ * tier_factor: maps org.priority [1–10] to [0, 1]
+ * log_age: min(max_boost, C × log₂(1 + wait/tau))
+ * norm: maps [1–5] to [0, 1]
+ */
+const normalizedWeightedSum: ScoringFormula = {
+  id: 'normalized_weighted_sum',
+  name: 'Normalized Weighted Sum + Log Aging',
+  description: 'Research-recommended formula: normalized inputs summing to 1.0 with logarithmic aging for bounded starvation prevention.',
+  reference: '§4.2, §6.1',
+  score: (job, now, _config, orgs) => {
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const wait = Math.max(0, now - job.enqueuedAt);
+
+    // Parameters (configurable via defaultParams)
+    const wTier = 0.30;
+    const wAge = 0.30;
+    const wUser = 0.25;
+    const wTool = 0.15;
+    const C = 10;          // aging coefficient
+    const tau = 60;        // aging time constant (seconds)
+    const maxBoost = 1.0;  // cap on aging contribution (normalized)
+    const maxPriority = 10;
+
+    // Normalize inputs to [0, 1]
+    const tierFactor = org.priority / maxPriority;
+    const userFactor = (job.userPriority - 1) / 4;  // [1,5] → [0,1]
+    const toolFactor = (job.toolPriority - 1) / 4;
+
+    // Logarithmic aging: min(max_boost, C × log₂(1 + wait/tau)) / C
+    // Normalized so max value ≈ 1.0 after sufficient wait
+    const rawAge = C * Math.log2(1 + wait / tau);
+    const ageFactor = Math.min(maxBoost, rawAge / (C * Math.log2(1 + 3600 / tau)));
+
+    return wTier * tierFactor + wAge * ageFactor + wUser * userFactor + wTool * toolFactor;
+  },
+  defaultParams: { wTier: 0.30, wAge: 0.30, wUser: 0.25, wTool: 0.15, C: 10, tau: 60 },
+};
+
+/**
+ * DRF-Aware Fair Share (§3.1, §6.1).
+ *
+ * Instead of a simple composite score, this uses Dominant Resource Fairness:
+ * 1. Compute each org's "dominant share" (max of cpu_share, gpu_share, mem_share)
+ * 2. The org with the lowest dominant share gets priority
+ * 3. Within same org, use normalized composite score with log aging
+ *
+ * Score structure: (1 - dominantShare) × 10000 + withinOrgScore
+ * This ensures the least-served org always wins over a more-served org.
+ */
+const drfFairShare: ScoringFormula = {
+  id: 'drf_fair_share',
+  name: 'DRF Fair Share + Log Aging',
+  description: 'Dominant Resource Fairness for inter-org scheduling, with normalized composite score and logarithmic aging within each org.',
+  reference: '§3.1, §4.2, §6.1',
+  score: (job, now, config, orgs, orgUsage) => {
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const wait = Math.max(0, now - job.enqueuedAt);
+
+    // Compute dominant share for this org
+    let dominantShare = 0;
+    if (orgUsage) {
+      const poolType = getJobPoolType(job, config);
+      const pool = config.cluster.pools.find(p => p.type === poolType);
+      if (pool) {
+        const used = orgUsage[job.orgId]?.[poolType] ?? { cpu: 0, memory: 0, gpu: 0 };
+        const total = {
+          cpu: pool.total.cpu - pool.reserved.cpu,
+          memory: pool.total.memory - pool.reserved.memory,
+          gpu: pool.total.gpu - pool.reserved.gpu,
+        };
+        const cpuShare = total.cpu > 0 ? used.cpu / total.cpu : 0;
+        const memShare = total.memory > 0 ? used.memory / total.memory : 0;
+        const gpuShare = total.gpu > 0 ? used.gpu / total.gpu : 0;
+
+        dominantShare = Math.max(cpuShare, memShare, gpuShare);
+      }
+    }
+
+    // Weight by org priority: higher-priority orgs get a natural bonus
+    // But DRF ensures even low-priority orgs get proportional resources
+    const priorityWeight = org.priority / 10;
+
+    // Logarithmic aging
+    const C = 10;
+    const tau = 60;
+    const rawAge = Math.min(1, (C * Math.log2(1 + wait / tau)) / (C * Math.log2(1 + 3600 / tau)));
+
+    // Within-org score
+    const userFactor = (job.userPriority - 1) / 4;
+    const toolFactor = (job.toolPriority - 1) / 4;
+    const withinOrg = 0.3 * userFactor + 0.2 * toolFactor + 0.5 * rawAge;
+
+    // DRF: favor orgs with lower dominant share
+    // Scale: (1 - dominantShare) in [0, 1], multiplied by priority weight
+    // Then add within-org score as tiebreaker
+    return (1 - dominantShare) * priorityWeight * 10000 + withinOrg * 100;
+  },
+  defaultParams: { C: 10, tau: 60 },
+};
+
+/**
+ * CFS-Inspired Virtual Runtime (§3.4, §6.3).
+ *
+ * Models the Linux CFS concept:
+ *   vruntime += actual_time_executed / weight(org)
+ *   Schedule the org with the lowest vruntime.
+ *
+ * Since we can't track actual runtime in a stateless scoring function,
+ * we approximate vruntime from orgUsage: sum of resources consumed / org weight.
+ * Lower vruntime → higher score (inverted for max-score-wins scheduler).
+ */
+const cfsVirtualRuntime: ScoringFormula = {
+  id: 'cfs_vruntime',
+  name: 'CFS Virtual Runtime',
+  description: 'Linux CFS-inspired scheduler: tracks virtual resource consumption per org. Orgs that consumed less get priority. Strongest fairness guarantee.',
+  reference: '§3.4, §6.3',
+  score: (job, now, config, orgs, orgUsage) => {
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const wait = Math.max(0, now - job.enqueuedAt);
+
+    // Org weight from priority (CFS: weight = 2^(-(nice/10)))
+    // Map priority [1–10] to nice [-10, +10] → weight
+    const nice = 10 - org.priority * 2;  // priority 5 → nice 0, priority 10 → nice -10
+    const weight = Math.pow(2, -(nice / 10));
+
+    // Compute "virtual resource time" from current usage
+    let vruntime = 0;
+    if (orgUsage) {
+      for (const pool of config.cluster.pools) {
+        const used = orgUsage[job.orgId]?.[pool.type] ?? { cpu: 0, memory: 0, gpu: 0 };
+        const total = {
+          cpu: pool.total.cpu - pool.reserved.cpu,
+          memory: pool.total.memory - pool.reserved.memory,
+          gpu: pool.total.gpu - pool.reserved.gpu,
+        };
+        // Virtual time = resources consumed / weight
+        const cpuVt = total.cpu > 0 ? (used.cpu / total.cpu) / weight : 0;
+        const gpuVt = total.gpu > 0 ? (used.gpu / total.gpu) / weight : 0;
+        vruntime += cpuVt + gpuVt;
+      }
+    }
+
+    // Lower vruntime → higher score (invert)
+    // Add aging to prevent starvation even in CFS model
+    const agingBoost = Math.min(1, Math.log2(1 + wait / 120) / 5);
+
+    return (1 / (1 + vruntime)) * 10000 + agingBoost * 100;
+  },
+  defaultParams: {},
+};
+
+/**
+ * Balanced Composite (Deep Origin) — production formula.
+ *
+ * pool = gpu_requested > 0 ? "mason-gpu" : "mason"
+ *
+ * org_priority_norm = org_priority / 10
+ * aging             = min(AGING_MAX_BOOST, AGING_C × log₂(1 + wait / AGING_TAU))
+ * org_load          = org_cpus_in_pool / pool_total_cpu
+ * cpu_hours         = cpu_requested × est_duration_hrs
+ * cpu_hrs_norm      = log(1 + cpu_hours) / log(1 + MAX_CPU_HOURS)
+ *
+ * score = 0.35 × org_priority_norm
+ *       + 0.25 × aging
+ *       + 0.20 × (1 − org_load)
+ *       + 0.20 × (1 − cpu_hrs_norm)
+ */
+const balancedComposite: ScoringFormula = {
+  id: 'balanced_composite',
+  name: 'Balanced Composite (Deep Origin)',
+  description: 'Production formula: org priority, logarithmic aging, inverse org pool load, and inverse log-normalized CPU-hours. All normalized to [0,1].',
+  reference: 'Custom (Deep Origin team-designed)',
+  score: (job, now, config, orgs, orgUsage) => {
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const wait = Math.max(0, now - job.enqueuedAt);
+
+    // Configurable weights
+    const wPriority = 0.35;
+    const wAging = 0.25;
+    const wLoad = 0.20;
+    const wCpuHrs = 0.20;
+
+    // Configurable constants
+    const AGING_C = 0.35;          // aging curve steepness
+    const AGING_TAU = 120;         // aging time scale (seconds)
+    const AGING_MAX_BOOST = 1.0;   // max aging value
+    const MAX_CPU_HOURS = 1000;    // normalization ceiling for cpu_hours
+    const maxPriority = 10;
+
+    // 1. Normalized org priority [0, 1]
+    const orgPriorityNorm = org.priority / maxPriority;
+
+    // 2. Logarithmic aging [0, agingMaxBoost]
+    const aging = Math.min(AGING_MAX_BOOST, AGING_C * Math.log2(1 + wait / AGING_TAU));
+
+    // 3. Org load: org_cpus_in_pool / pool_total_cpu
+    let orgLoad = 0;
+    if (orgUsage) {
+      const poolType = getJobPoolType(job, config);
+      const pool = config.cluster.pools.find(p => p.type === poolType);
+      if (pool) {
+        const used = orgUsage[job.orgId]?.[poolType] ?? { cpu: 0, memory: 0, gpu: 0 };
+        orgLoad = pool.total.cpu > 0 ? Math.min(1, used.cpu / pool.total.cpu) : 0;
+      }
+    }
+
+    // 4. CPU-hours: cpu_requested × estimatedDuration (converted to hours)
+    const cpuHours = job.resources.cpu * (job.estimatedDuration / 3600);
+    const cpuHrsNorm = Math.log(1 + cpuHours) / Math.log(1 + MAX_CPU_HOURS);
+
+    return wPriority * orgPriorityNorm
+         + wAging   * aging
+         + wLoad    * (1 - orgLoad)
+         + wCpuHrs  * (1 - cpuHrsNorm);
+  },
+  defaultParams: {
+    wPriority: 0.35, wAging: 0.25, wLoad: 0.20, wCpuHrs: 0.20,
+    agingC: 0.35, agingTau: 120, agingMaxBoost: 1.0, maxCpuHours: 1000,
+  },
+};
+
+/**
+ * Strict FIFO (for baseline comparison).
+ * Score = enqueuedAt (earlier enqueue = higher score, inverted).
+ */
+const strictFIFO: ScoringFormula = {
+  id: 'strict_fifo',
+  name: 'Strict FIFO (Baseline)',
+  description: 'Pure first-in-first-out ordering. No priority, no aging. Useful as a baseline for comparison.',
+  reference: 'N/A (baseline)',
+  score: (job) => {
+    // Earlier enqueue → higher score
+    return 1_000_000 - job.enqueuedAt;
+  },
+  defaultParams: {},
+};
+
+// ── Formula Registry ──────────────────────────────────────────────────────
+
+const _registry = new Map<string, ScoringFormula>();
+
+// Register built-in formulas
+[currentWeightedScore, normalizedWeightedSum, drfFairShare, cfsVirtualRuntime, balancedComposite, strictFIFO]
+  .forEach(f => _registry.set(f.id, f));
+
+/**
+ * Get all registered formulas.
+ */
+export const getFormulas = (): ScoringFormula[] => Array.from(_registry.values());
+
+/**
+ * Get a formula by ID.
+ */
+export const getFormula = (id: string): ScoringFormula | undefined => _registry.get(id);
+
+/**
+ * Register a custom formula (for extensibility).
+ */
+export const registerFormula = (formula: ScoringFormula): void => {
+  _registry.set(formula.id, formula);
+};
+
+/**
+ * Create a ScoreFn from a formula ID that can be passed to the DES engine.
+ * Falls back to the current production formula if ID not found.
+ */
+export const createScoreFn = (formulaId: string): ScoreFn => {
+  const formula = _registry.get(formulaId);
+  if (!formula) return currentWeightedScore.score;
+  return formula.score;
+};

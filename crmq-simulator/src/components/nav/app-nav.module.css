@@ -1,0 +1,80 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #131927;
+  border-bottom: 1px solid #212936;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 24px;
+  text-decoration: none;
+}
+
+.brandIcon {
+  color: var(--mantine-color-indigo-5);
+  font-size: 18px;
+}
+
+.brandLabel {
+  font-weight: 700;
+  font-size: 14px;
+  color: #E5E7EA;
+  letter-spacing: -0.2px;
+}
+
+.navLinks {
+  display: flex;
+  gap: 2px;
+}
+
+.navLink {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #898989;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.navLink:hover {
+  background: #21293620;
+  color: #D2D5DB;
+}
+
+.navLinkActive {
+  background: #212936;
+  color: #E5E7EA;
+}
+
+.navIcon {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.docLink {
+  font-size: 12px;
+  color: var(--mantine-color-indigo-5);
+  text-decoration: none;
+}
+
+.docLink:hover {
+  text-decoration: underline;
+}

@@ -1,0 +1,148 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: var(--card-shadow);
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Header row */
+.headerRow {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 4px 0;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.orgCol {
+  flex: 1;
+}
+
+.poolHeaderCol {
+  flex: 1;
+  text-align: center;
+}
+
+.poolHeaderLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Org rows */
+.orgRow {
+  padding-bottom: 6px;
+  border-bottom: 1px solid #F3F4F6;
+}
+
+.orgRow:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.orgHeader {
+  width: 100%;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.orgHeader:hover {
+  opacity: 0.8;
+}
+
+.chevron {
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+}
+
+.orgName {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.priorityBadge {
+  font-size: 10px;
+  color: #FFFFFF;
+  background: #4A65DC;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+/* Pool blocks inside expanded org */
+.gridBody {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.poolBlock {
+  flex: 1;
+  background: #F7F8FA;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.poolTag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+
+.resourceGrid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 6px;
+  align-items: center;
+}
+
+.resourceDimLabel {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+/* Mini bars */
+.miniBarCell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.miniBarTrack {
+  height: 6px;
+  border-radius: 3px;
+  background: #E5E7EA;
+  overflow: hidden;
+}
+
+.miniBarFill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.miniBarLabel {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-family: monospace;
+  line-height: 1;
+}

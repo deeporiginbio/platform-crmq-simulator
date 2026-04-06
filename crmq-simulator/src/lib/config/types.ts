@@ -1,0 +1,272 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+/**
+ * Configuration Architecture — Types
+ * ====================================
+ * Discriminated unions for polymorphic formula and limit configurations.
+ * Uses the registry pattern: each formula/limit type is self-contained
+ * with its own component, schema, defaults, and resolution logic.
+ */
+
+import type { z } from 'zod';
+import type { Resources, CRMQConfig, Org, QuotaType } from '../types';
+
+// ── Resource Derivation Ratios ──────────────────────────────────────────────
+// Users configure ONE dimension per pool (CPU or GPU). The rest is derived.
+//   1 CPU  = 4 GB memory
+//   1 GPU  = 4 CPU  (i.e. CPU = GPU × 4)
+
+export const MEMORY_PER_CPU = 4;    // 1 CPU → 4 GB
+export const CPU_PER_GPU = 4;       // 1 GPU → 4 CPU
+
+/**
+ * Derive full Resources from the user-configured dimension.
+ *   quotaType 'cpu' → user sets CPU; memory = CPU × 4; gpu = 0
+ *   quotaType 'gpu' → user sets GPU; cpu = GPU × 4; memory = cpu × 4
+ */
+export const deriveResources = (quotaType: QuotaType, value: number): Resources => {
+  if (quotaType === 'gpu') {
+    const cpu = value * CPU_PER_GPU;
+    return { cpu, memory: cpu * MEMORY_PER_CPU, gpu: value };
+  }
+  // cpu pool — no GPU at all
+  return { cpu: value, memory: value * MEMORY_PER_CPU, gpu: 0 };
+};
+
+/**
+ * Extract the user-configurable value from a Resources object given the pool quotaType.
+ */
+export const getUserValue = (quotaType: QuotaType, resources: Resources): number =>
+  quotaType === 'gpu' ? resources.gpu : resources.cpu;
+
+/**
+ * Label for the user-configurable dimension.
+ */
+export const getQuotaLabel = (quotaType: QuotaType): string =>
+  quotaType === 'gpu' ? 'GPU' : 'CPU';
+
+// ── Formula System ──────────────────────────────────────────────────────────
+
+/**
+ * Current Weighted Score (baseline production formula).
+ * Score = (OrgP × orgWeight) + (UserP × userWeight) + (ToolP × toolWeight) + (Wait × agingFactor)
+ */
+export interface CurrentWeightedParams {
+  orgWeight: number;
+  userWeight: number;
+  toolWeight: number;
+  agingFactor: number;
+}
+
+/**
+ * Normalized Weighted Sum + Log Aging (§4.2 recommendation).
+ * All weights sum to 1.0 with logarithmic aging for bounded starvation prevention.
+ */
+export interface NormalizedWeightedSumParams {
+  wTier: number;
+  wAge: number;
+  wUser: number;
+  wTool: number;
+  C: number;
+  tau: number;
+}
+
+/**
+ * DRF Fair Share + Log Aging (§3.1, §6.1).
+ * Dominant Resource Fairness for inter-org scheduling.
+ */
+export interface DrfFairShareParams {
+  C: number;
+  tau: number;
+}
+
+/**
+ * CFS Virtual Runtime (§3.4, §6.3).
+ * Linux CFS-inspired scheduler — no configurable params.
+ */
+export type CfsVruntimeParams = Record<string, never>;
+
+/**
+ * Balanced Composite (Deep Origin) — multi-factor normalized formula.
+ *
+ * score = wPriority × (org_priority / 10)
+ *       + wAging   × min(agingMaxBoost, agingC × log₂(1 + wait / agingTau))
+ *       + wLoad    × (1 − org_cpus_in_pool / pool_total_cpu)
+ *       + wCpuHrs  × (1 − log(1 + cpu_hours) / log(1 + maxCpuHours))
+ *
+ * where cpu_hours = cpu_requested × estimatedDuration (in hours).
+ */
+export interface BalancedCompositeParams {
+  wPriority: number;
+  wAging: number;
+  wLoad: number;
+  wCpuHrs: number;
+  agingC: number;         // aging curve steepness (default 0.35)
+  agingTau: number;       // aging time scale in seconds (default 120)
+  agingMaxBoost: number;  // max aging value (default 1.0)
+  maxCpuHours: number;    // normalization ceiling for cpu_hours (default 1000)
+}
+
+/**
+ * Strict FIFO baseline — no configurable params.
+ */
+export type StrictFifoParams = Record<string, never>;
+
+/**
+ * Discriminated union of all formula configurations.
+ * The `type` field determines which params are present.
+ * Adding a new formula = adding a new branch here + a registry entry.
+ */
+export type FormulaConfig =
+  | { type: 'current_weighted'; params: CurrentWeightedParams }
+  | { type: 'normalized_weighted_sum'; params: NormalizedWeightedSumParams }
+  | { type: 'drf_fair_share'; params: DrfFairShareParams }
+  | { type: 'cfs_vruntime'; params: CfsVruntimeParams }
+  | { type: 'balanced_composite'; params: BalancedCompositeParams }
+  | { type: 'strict_fifo'; params: StrictFifoParams };
+
+export type FormulaType = FormulaConfig['type'];
+
+
+// ── Limit System ────────────────────────────────────────────────────────────
+
+export type LimitMode = 'absolute' | 'percentage' | 'uncapped';
+
+/**
+ * Discriminated union of limit values.
+ * The `mode` field determines the shape.
+ */
+export type LimitValue =
+  | { mode: 'absolute'; resources: Resources }
+  | { mode: 'percentage'; pct: Resources }  // each dim is 0–100
+  | { mode: 'uncapped' };
+
+/** Per-org, per-pool limit configuration */
+export interface OrgQuotaConfig {
+  orgId: string;
+  limits: Record<string, LimitValue>;  // keyed by pool type
+}
+
+
+// ── Full Scheduling Policy ──────────────────────────────────────────────────
+
+export interface SchedulingPolicyConfig {
+  formula: FormulaConfig;
+  scheduler: {
+    topN: number;
+    skipThreshold: number;
+    backfillMaxRatio: number;
+  };
+  cluster: {
+    pools: CRMQConfig['cluster']['pools'];
+  };
+  orgQuotas: OrgQuotaConfig[];
+  ttlDefault: number;
+}
+
+
+// ── Registry Interfaces ─────────────────────────────────────────────────────
+
+/**
+ * A formula definition registers:
+ * - metadata (label, description, icon)
+ * - Zod schema for validation
+ * - default parameter values
+ * - which limit types are compatible
+ *
+ * The React component is registered separately in the component layer
+ * to keep this file framework-agnostic.
+ */
+export interface FormulaDefinition<P = unknown> {
+  id: FormulaType;
+  label: string;
+  description: string;
+  icon: string;
+  schema: z.ZodType<P>;
+  defaultParams: P;
+  compatibleLimitTypes: LimitMode[];
+}
+
+/**
+ * A limit definition registers:
+ * - metadata
+ * - Zod schema
+ * - default value
+ * - resolve function: converts to absolute Resources given pool totals
+ */
+export interface LimitDefinition<V = unknown> {
+  mode: LimitMode;
+  label: string;
+  description: string;
+  icon: string;
+  schema: z.ZodType<V>;
+  defaultValue: V;
+  /** Resolve this limit to absolute Resources, given the pool's total capacity */
+  resolve: (value: V, poolTotal: Resources) => Resources;
+}
+
+
+// ── Validation ──────────────────────────────────────────────────────────────
+
+export type ValidationSeverity = 'error' | 'warning' | 'info';
+
+export interface ValidationMessage {
+  severity: ValidationSeverity;
+  field?: string;      // e.g. "orgQuotas.deeporigin.mason-gpu.cpu"
+  pool?: string;       // pool type if pool-scoped
+  orgId?: string;      // org ID if org-scoped
+  message: string;
+}
+
+
+// ── Benchmark Types ─────────────────────────────────────────────────────────
+
+export type BenchmarkStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface BenchmarkScenario {
+  id: string;
+  name: string;
+  config: CRMQConfig;
+  orgs: Org[];
+}
+
+export interface BenchmarkMetrics {
+  avgWaitTime: number;
+  maxWaitTime: number;
+  p95WaitTime: number;
+  throughput: number;          // jobs completed per minute
+  utilization: Record<string, number>;  // per-pool CPU utilization %
+  evictionRate: number;        // % of jobs evicted by TTL
+  fairnessIndex: number;       // Jain's fairness index (0–1)
+  orgMetrics: Record<string, {
+    avgWaitTime: number;
+    jobsCompleted: number;
+    jobsEvicted: number;
+  }>;
+}
+
+export interface BenchmarkRun {
+  id: string;
+  name: string;
+  createdAt: number;
+  status: BenchmarkStatus;
+  scenarios: BenchmarkScenario[];
+  workload: {
+    jobs: Array<{ name: string; orgId: string; userPriority: number; toolPriority: number; resources: Resources; estimatedDuration: number; ttl: number }>;
+    arrivalPattern: 'burst' | 'uniform' | 'poisson';
+  };
+  results?: Record<string, BenchmarkMetrics>;  // keyed by scenario ID
+  duration?: number;  // sim-time duration of the benchmark run
+}
+
+export interface BenchmarkReport {
+  id: string;
+  name: string;
+  createdAt: number;
+  benchmarkRunId: string;
+  summary: string;
+  comparison: {
+    winner: string;    // scenario ID
+    dimensions: Record<string, string>;  // "latency" → scenario ID, "fairness" → scenario ID
+  };
+}

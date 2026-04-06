@@ -1,0 +1,22 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: var(--card-shadow);
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.countInfo {
+  color: var(--text-muted);
+  margin-left: 4px;
+}

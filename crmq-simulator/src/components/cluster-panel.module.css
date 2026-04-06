@@ -1,0 +1,77 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: var(--card-shadow);
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.poolSection {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.poolSection:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.poolHeader {
+  width: 100%;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.poolHeader:hover {
+  opacity: 0.8;
+}
+
+.chevron {
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+}
+
+.barTrack {
+  height: 8px;
+  border-radius: 4px;
+  background: #E5E7EA;
+  overflow: hidden;
+  display: flex;
+}
+
+.barLabel {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.barLabelDanger { color: #EE443F; }
+.barLabelWarning { color: #DA9900; }
+
+.freeValue {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.freeValuePositive { color: #11A468; }
+.freeValueNegative { color: #EE443F; }
+
+.freeLabel {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.legendItem {
+  font-size: 11px;
+  color: var(--text-secondary);
+}

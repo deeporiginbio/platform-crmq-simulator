@@ -1,0 +1,165 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  height: 620px;
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.countBadge {
+  background: rgba(75, 106, 241, 0.12);
+  color: #4B6AF1;
+  font-family: monospace;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  margin-left: 8px;
+}
+
+.emptyState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  gap: 8px;
+}
+
+.emptyIcon {
+  font-size: 28px;
+}
+
+.queueItem {
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 12px;
+  border: 1px solid #E5E7EA;
+  background: #F9FAFB;
+  transition: border-color 0.2s;
+}
+
+.queueItem:hover {
+  border-color: #D2D5DB;
+}
+
+.queueItemTarget {
+  background: rgba(118, 56, 229, 0.06);
+  border-color: rgba(140, 86, 242, 0.4);
+}
+
+.rank {
+  color: var(--text-muted);
+  font-family: monospace;
+  width: 20px;
+  text-align: right;
+}
+
+.jobName {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.jobId {
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.skipBadge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.skipBadgeDanger {
+  background: #FDECEC;
+  color: #D93E39;
+}
+
+.skipBadgeWarning {
+  background: #FFFCF3;
+  color: #B27700;
+}
+
+.score {
+  color: #B27700;
+  font-weight: 700;
+  font-family: monospace;
+}
+
+.predictionTime {
+  font-family: monospace;
+  font-weight: 700;
+}
+
+.metaItem {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.resourceTag {
+  background: #F3F4F6;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  border: 1px solid #E5E7EA;
+}
+
+.scoreBreakdown {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ageBonus {
+  color: #4B6AF1;
+}
+
+.ttlDanger { color: #EE443F; }
+.ttlWarning { color: #DA9900; }
+
+.barTrack {
+  height: 8px;
+  border-radius: 4px;
+  background: #E5E7EA;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.formulaBox {
+  background: #F9FAFB;
+  border: 1px solid #D2D5DB;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: monospace;
+  font-size: 11px;
+  color: #4B6AF1;
+}
+
+.formulaWeight {
+  color: #B27700;
+}
+
+.formulaAging {
+  color: #4B6AF1;
+}

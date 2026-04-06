@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CRMQ Virtual Cluster Simulator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Load modules in order: scheduler first, then virtual-cluster -->
+  <script src="scheduler.js"></script>
+  <script src="virtual-cluster.js"></script>
+
+  <style>
+    body { background:#0f172a; color:#e2e8f0; font-family:'Inter',system-ui,sans-serif; }
+    .card { background:#1e293b; border:1px solid #334155; border-radius:10px; }
+    .resource-bar { height:8px; border-radius:4px; background:#334155; overflow:hidden; }
+    .resource-fill { height:100%; border-radius:4px; transition:width 0.4s ease; }
+    .reservation-banner { background:linear-gradient(90deg,#4c1d9520,#7c3aed30); border:1px solid #7c3aed80; }
+    ::-webkit-scrollbar { width:4px; height:4px; }
+    ::-webkit-scrollbar-track { background:#1e293b; }
+    ::-webkit-scrollbar-thumb { background:#475569; border-radius:2px; }
+    .pulse { animation:pulse 1.5s ease-out infinite; }
+    @keyframes pulse { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(1.6)} }
+    .cfg-input { background:#0f172a; border:1px solid #334155; color:#e2e8f0; border-radius:6px; padding:6px 10px; width:100%; font-size:12px; }
+    .cfg-input:focus { outline:none; border-color:#3b82f6; }
+    .formula-box { background:#0f172a; border:1px solid #1e3a5f; border-radius:8px; padding:10px 14px; font-family:monospace; font-size:11px; color:#93c5fd; }
+    .prediction-card { background:#0f172a80; border:1px solid #1e3a5f; border-radius:8px; }
+    .vc-badge { font-size:10px; padding:2px 7px; border-radius:999px; font-weight:600; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+    // ── Grab modules from window ─────────────────────────────────────────────
+    const S  = window.CRMQ.Scheduler;
+    const VC = window.CRMQ.VirtualCluster;
+
+    // ── App ───────────────────────────────────────────────────────────────────
+    function App() {
+      const [cfg, setCfg]               = useState(S.DEFAULT_CONFIG);
+      const [orgs, setOrgs]             = useState(S.DEFAULT_ORGS);
+      const [simTime, setSimTime]       = useState(0);
+      const [running, setRunning]       = useState(false);
+      const [speed, setSpeed]           = useState(1);
+      const [queue, setQueue]           = useState([]);
+      const [active, setActive]         = useState([]);
+      const [completed, setCompleted]   = useState([]);
+      const [evicted, setEvicted]       = useState([]);
+      const [logs, setLogs]             = useState([]);
+      const [reservMode, setReservMode] = useState(false);
+      const [reservTarget, setReservTarget] = useState(null);
+      const [orgUsage, setOrgUsage]     = useState(Object.fromEntries(S.DEFAULT_ORGS.map(o=>[o.id,{...S.ZERO}])));
+      const [showAdd, setShowAdd]       = useState(false);
+      const [showConfig, setShowConfig] = useState(false);
+
+      // Virtual Cluster predictions (§2.3)
+      const [predictions, setPredictions] = useState({});
+
+      const stateRef = useRef({});
+      stateRef.current = { queue,active,completed,evicted,logs,orgUsage,simTime,reservMode,reservTarget,cfg,orgs };
+
+      const log = useCallback((t,msg,type='info') => {
+        setLogs(p => [{id:Math.random(),t,msg,type},...p].slice(0,150));
+      }, []);
+
+      const inUse = S.sumResources(active);
+      const avail = S.sub3(S.sub3(cfg.cluster.total, cfg.cluster.reserved), inUse);
+
+      // ── Recompute Virtual Cluster predictions whenever queue/active change ──
+      useEffect(() => {
+        if (queue.length === 0) { setPredictions({}); return; }
+        const preds = VC.predict(queue, active, orgUsage, simTime, cfg, orgs);
+        setPredictions(preds);
+      }, [queue, active, orgUsage, simTime, cfg, orgs]);
+
+      // ── Tick ──────────────────────────────────────────────────────────────
+      const tick = useCallback((dt) => {
+        setSimTime(prev => {
+          const st  = stateRef.current;
+          const now = prev + dt;
+
+          // 1. Complete finished jobs
+          const comp = S.completeJobs(st.active, dt, now, st.orgUsage, log);
+
+          // 2. TTL eviction
+          const ttl = S.evictExpired(st.queue, now, log);
+
+          // 3. Run scheduler
+          const res = S.runScheduler(
+            ttl.live, comp.stillRunning, comp.orgUsage,
+            st.reservMode, st.reservTarget,
+            now, st.cfg, st.orgs, log
+          );
+
+          setQueue(res.queue);
+          setActive(res.active);
+          setCompleted(p => [...comp.completed,...p].slice(0,60));
+          setEvicted(p  => [...ttl.evicted,...p].slice(0,30));
+          setOrgUsage(res.orgUsage);
+          setReservMode(res.reservMode);
+          setReservTarget(res.reservTarget);
+
+          return now;
+        });
+      }, [log]);
+
+      // Auto-run
+      useEffect(() => {
+        if (!running) return;
+        const id = setInterval(() => tick(speed), 200);
+        return () => clearInterval(id);
+      }, [running, speed, tick]);
+
+      const loadPreset = () => {
+        const now = stateRef.current.simTime;
+        const jobs = S.PRESET_JOBS.map((j,i) => ({
+          ...j, id: S.newJobId(), enqueuedAt: now + i*3, skipCount: 0,
+          ttl: j.ttl ?? stateRef.current.cfg.ttlDefault,
+        }));
+        setQueue(p => [...p,...jobs]);
+        log(now, `📦 Loaded ${jobs.length} preset jobs into queue`, 'info');
+      };
+
+      const reset = () => {
+        setSimTime(0); setRunning(false); setQueue([]); setActive([]);
+        setCompleted([]); setEvicted([]); setLogs([]); setReservMode(false); setReservTarget(null);
+        setOrgUsage(Object.fromEntries(orgs.map(o=>[o.id,{...S.ZERO}])));
+        setPredictions({});
+        S.resetJobIdCounter();
+      };
+
+      const enqueue = (job) => {
+        const j = { ...job, id: S.newJobId(), enqueuedAt: stateRef.current.simTime, skipCount:0 };
+        setQueue(p => [...p,j]);
+        log(stateRef.current.simTime,
+          `📥 ENQUEUE | ${j.name} [${j.id}] — org=${j.orgId}, CPU:${j.resources.cpu} MEM:${j.resources.memory}GB GPU:${j.resources.gpu}, est=${S.fmtTime(j.estimatedDuration)}, TTL=${S.fmtTime(j.ttl)}`,
+          'info');
+      };
+
+      return (
+        <div className="min-h-screen p-4 space-y-3">
+          {/* Header */}
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <h1 className="text-xl font-bold text-white flex items-center gap-2">
+                <span className="text-blue-400">⚙</span> CRMQ Virtual Cluster Simulator
+              </h1>
+              <p className="text-slate-400 text-xs mt-0.5">
+                Cost &amp; Resource Management Queue ·{' '}
+                <a href="https://deeporigin.atlassian.net/wiki/spaces/PLEN/pages/832897038" target="_blank" className="text-blue-400 hover:underline">Design Doc ↗</a>
+                <span className="ml-3 text-slate-600">scheduler.js + virtual-cluster.js + index.html</span>
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-slate-300 font-mono bg-slate-800 px-3 py-1.5 rounded text-sm">T = {S.fmtTime(simTime)}</span>
+              <select value={speed} onChange={e=>setSpeed(+e.target.value)} className="bg-slate-700 text-white px-2 py-1.5 rounded text-sm border border-slate-600">
+                <option value={1}>×1</option><option value={5}>×5</option><option value={10}>×10</option>
+                <option value={30}>×30</option><option value={60}>×60</option>
+              </select>
+              <button onClick={()=>tick(1)} disabled={running} className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm disabled:opacity-40">+1s</button>
+              <button onClick={()=>tick(10)} disabled={running} className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm disabled:opacity-40">+10s</button>
+              <button onClick={()=>setRunning(v=>!v)}
+                className={`px-4 py-1.5 rounded text-sm font-bold transition-colors ${running?'bg-amber-600 hover:bg-amber-500':'bg-green-600 hover:bg-green-500'} text-white`}>
+                {running ? '⏸ Pause' : '▶ Run'}
+              </button>
+              <button onClick={()=>setShowConfig(true)} className="px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded text-sm">⚙ Config</button>
+              <button onClick={reset} className="px-3 py-1.5 bg-red-800 hover:bg-red-700 text-white rounded text-sm">↺ Reset</button>
+            </div>
+          </div>
+
+          {/* Reservation mode banner */}
+          {reservMode && (
+            <div className="reservation-banner rounded-lg px-4 py-2.5 flex items-center gap-3">
+              <div className="relative w-3 h-3">
+                <div className="pulse absolute inset-0 bg-purple-500 rounded-full"/>
+                <div className="absolute inset-0 bg-purple-400 rounded-full"/>
+              </div>
+              <span className="text-purple-300 font-bold text-sm">RESERVATION MODE ACTIVE</span>
+              <span className="text-purple-200 text-xs">
+                Blocking new dispatches — accumulating for: <code className="bg-purple-900/50 px-1 rounded">{reservTarget}</code>
+              </span>
+            </div>
+          )}
+
+          {/* Main grid: 3 columns */}
+          <div className="grid grid-cols-12 gap-3">
+            {/* Left: Cluster + Orgs */}
+            <div className="col-span-3 space-y-3">
+              <ClusterPanel cfg={cfg} inUse={inUse} avail={avail} />
+              <OrgPanel orgs={orgs} orgUsage={orgUsage} />
+            </div>
+
+            {/* Center: Queue */}
+            <div className="col-span-5">
+              <QueuePanel queue={queue} simTime={simTime} reservTarget={reservTarget}
+                cfg={cfg} orgs={orgs} predictions={predictions}
+                onAdd={()=>setShowAdd(true)} onLoadPreset={loadPreset} />
+            </div>
+
+            {/* Right: Virtual Cluster Predictions + Active + History */}
+            <div className="col-span-4 space-y-3">
+              <VCPredictionsPanel predictions={predictions} queue={queue} simTime={simTime} cfg={cfg} orgs={orgs} />
+              <ActivePanel jobs={active} simTime={simTime} />
+              <HistoryPanel completed={completed} evicted={evicted} />
+            </div>
+          </div>
+
+          {/* Log */}
+          <LogPanel logs={logs} />
+
+          {showAdd    && <AddModal cfg={cfg} orgs={orgs} onAdd={enqueue} onClose={()=>setShowAdd(false)} />}
+          {showConfig && <ConfigModal cfg={cfg} orgs={orgs} onSave={(c,o)=>{setCfg(c);setOrgs(o);}} onClose={()=>setShowConfig(false)} />}
+        </div>
+      );
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Virtual Cluster Predictions Panel (§2.3 + §1.5) ─────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function VCPredictionsPanel({ predictions, queue, simTime, cfg, orgs }) {
+      const scored = [...queue]
+        .map(j => ({ ...j, score: Math.round(S.calcScore(j, simTime, cfg, orgs)) }))
+        .sort((a,b) => b.score - a.score);
+
+      const hasPreds = Object.keys(predictions).length > 0;
+
+      return (
+        <div className="card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-slate-300 text-xs font-semibold uppercase tracking-wider flex items-center gap-2">
+              <span className="text-cyan-400">🔮</span> Virtual Cluster — Time-to-Start
+            </h2>
+            <span className="text-xs text-slate-600">§2.3 Estimation Engine</span>
+          </div>
+
+          {!hasPreds && (
+            <div className="text-slate-600 text-xs text-center py-3">
+              Add jobs to queue to see Time-to-Start predictions
+            </div>
+          )}
+
+          <div className="space-y-2 overflow-y-auto" style={{maxHeight:'220px'}}>
+            {scored.map(job => {
+              const pred = predictions[job.id];
+              if (!pred) return null;
+              const fmt    = VC.formatPrediction(pred);
+              const reason = VC.getReasonLabel(pred.blockingReason);
+
+              return (
+                <div key={job.id} className="prediction-card p-2.5 space-y-1.5">
+                  {/* Row 1: name + delta */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white text-xs font-medium">{job.name}</span>
+                      <span className="text-slate-600 text-xs font-mono">[{job.id}]</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {pred.status === 'PREDICTED' && pred.delta !== null && (
+                        <span className={`font-bold font-mono text-sm ${fmt.css}`}>
+                          {fmt.label}
+                        </span>
+                      )}
+                      {pred.status === 'WILL_EXPIRE' && (
+                        <span className="text-red-400 font-bold text-xs">⏰ Will expire</span>
+                      )}
+                      {pred.status === 'UNPREDICTABLE' && (
+                        <span className="text-slate-500 text-xs">Unknown</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Row 2: blocking reason + variance window */}
+                  <div className="flex items-center justify-between text-xs">
+                    <span className={`vc-badge ${reason.css}`} style={{background: reason.css.includes('green') ? '#16a34a20' : reason.css.includes('red') ? '#dc262620' : reason.css.includes('amber') ? '#d9770620' : reason.css.includes('blue') ? '#3b82f620' : reason.css.includes('purple') ? '#7c3aed20' : reason.css.includes('cyan') ? '#06b6d420' : reason.css.includes('orange') ? '#ea580c20' : '#33415520'}}>
+                      {reason.icon} {reason.label}
+                    </span>
+                    {pred.status === 'PREDICTED' && pred.variance !== null && (
+                      <span className="text-slate-500 font-mono">
+                        {fmt.window} <span className="text-slate-600">(±{pred.variance}%)</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {hasPreds && (
+            <div className="text-xs text-slate-600 border-t border-slate-700 pt-2">
+              Predictions recalculate dynamically. Variance reflects estimation uncertainty.
+            </div>
+          )}
+        </div>
+      );
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Cluster Panel ────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function ClusterPanel({ cfg, inUse, avail }) {
+      const cl = cfg.cluster;
+      return (
+        <div className="card p-4 space-y-3">
+          <h2 className="text-slate-300 text-xs font-semibold uppercase tracking-wider">Cluster Resources</h2>
+          <ResBar label="CPU" total={cl.total.cpu} reserved={cl.reserved.cpu} inUse={inUse.cpu} unit="cores" color="#3b82f6"/>
+          <ResBar label="Memory" total={cl.total.memory} reserved={cl.reserved.memory} inUse={inUse.memory} unit="GB" color="#8b5cf6"/>
+          <ResBar label="GPU" total={cl.total.gpu} reserved={cl.reserved.gpu} inUse={inUse.gpu} unit="cards" color="#10b981"/>
+          <div className="grid grid-cols-3 gap-1 pt-2 border-t border-slate-700">
+            {[['CPU',avail.cpu],['MEM',avail.memory],['GPU',avail.gpu]].map(([l,v])=>(
+              <div key={l} className="text-center">
+                <div className={`font-bold text-base ${v>0?'text-green-400':'text-red-400'}`}>{v}</div>
+                <div className="text-slate-500 text-xs">{l} free</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function ResBar({ label, total, reserved, inUse, unit, color }) {
+      const rPct = total>0?(reserved/total)*100:0;
+      const iPct = total>0?(inUse/total)*100:0;
+      const util = total>0?Math.round((inUse+reserved)/total*100):0;
+      return (
+        <div>
+          <div className="flex justify-between text-xs mb-1">
+            <span className="text-slate-300">{label}</span>
+            <span className={`font-mono ${util>90?'text-red-400':util>70?'text-amber-400':'text-slate-400'}`}>
+              {inUse+reserved}/{total} {unit} ({util}%)
+            </span>
+          </div>
+          <div className="resource-bar flex">
+            <div style={{width:`${rPct}%`,background:'#f59e0b40',borderRight:'1px solid #f59e0b60'}}/>
+            <div style={{width:`${iPct}%`,background:util>90?'#dc2626':util>70?'#d97706':color}}/>
+          </div>
+          <div className="flex gap-3 text-xs mt-0.5 text-slate-600">
+            <span>🟡 {reserved} rsrvd</span>
+            <span style={{color}}>● {inUse} in-use</span>
+            <span className="text-green-700">◌ {total-reserved-inUse} free</span>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Org Panel ────────────────────────────────────────────────────────────
+
+    function OrgPanel({ orgs, orgUsage }) {
+      return (
+        <div className="card p-4 space-y-3">
+          <h2 className="text-slate-300 text-xs font-semibold uppercase tracking-wider">Org Quotas</h2>
+          {orgs.map(org => {
+            const used = orgUsage[org.id] || S.ZERO;
+            return (
+              <div key={org.id}>
+                <div className="flex justify-between mb-1">
+                  <span className="text-slate-200 text-xs font-medium">{org.name}</span>
+                  <span className="text-xs text-slate-500">P{org.priority}</span>
+                </div>
+                {[['CPU',used.cpu,org.limits.cpu],['MEM',used.memory,org.limits.memory]].map(([l,u,lim])=>{
+                  const p=lim>0?Math.min(100,Math.round(u/lim*100)):0;
+                  return (
+                    <div key={l} className="mb-1">
+                      <div className="flex justify-between text-xs text-slate-500 mb-0.5"><span>{l}</span><span>{u}/{lim}</span></div>
+                      <div className="resource-bar"><div className="resource-fill" style={{width:`${p}%`,background:p>90?'#dc2626':p>70?'#d97706':'#22c55e'}}/></div>
+                    </div>
+                  );
+                })}
+                {org.limits.gpu>0 && (()=>{
+                  const p=Math.min(100,Math.round(used.gpu/org.limits.gpu*100));
+                  return (
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-500 mb-0.5"><span>GPU</span><span>{used.gpu}/{org.limits.gpu}</span></div>
+                      <div className="resource-bar"><div className="resource-fill" style={{width:`${p}%`,background:p>90?'#dc2626':p>70?'#d97706':'#10b981'}}/></div>
+                    </div>
+                  );
+                })()}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Queue Panel ──────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function QueuePanel({ queue, simTime, reservTarget, cfg, orgs, predictions, onAdd, onLoadPreset }) {
+      const sc = cfg.scoring;
+      const scored = [...queue]
+        .map(j => ({ ...j, score:Math.round(S.calcScore(j,simTime,cfg,orgs)), wait:Math.max(0,simTime-j.enqueuedAt) }))
+        .sort((a,b) => b.score-a.score);
+
+      return (
+        <div className="card p-4 flex flex-col" style={{minHeight:'520px'}}>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-slate-300 text-xs font-semibold uppercase tracking-wider">
+              Priority Queue
+              <span className="ml-2 bg-blue-600/30 text-blue-300 font-mono px-2 py-0.5 rounded-full text-xs">{queue.length}</span>
+            </h2>
+            <div className="flex gap-2">
+              <button onClick={onLoadPreset} className="text-xs px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded border border-slate-600">📦 Presets</button>
+              <button onClick={onAdd} className="text-xs px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded">+ Add Job</button>
+            </div>
+          </div>
+
+          {scored.length===0 && (
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-sm space-y-2">
+              <div className="text-3xl">📭</div>
+              <div>Queue is empty — load presets or add a job</div>
+            </div>
+          )}
+
+          <div className="space-y-2 overflow-y-auto flex-1" style={{maxHeight:'400px'}}>
+            {scored.map((job,i) => {
+              const pred = predictions[job.id];
+              return <QueueItem key={job.id} job={job} rank={i+1} isTarget={job.id===reservTarget} cfg={cfg} orgs={orgs} prediction={pred}/>;
+            })}
+          </div>
+
+          <div className="mt-3 pt-3 border-t border-slate-700">
+            <div className="formula-box">
+              Score = (OrgP × <span className="text-amber-300">{sc.orgWeight.toLocaleString()}</span>)
+                    + (UserP × <span className="text-amber-300">{sc.userWeight.toLocaleString()}</span>)
+                    + (ToolP × <span className="text-amber-300">{sc.toolWeight.toLocaleString()}</span>)
+                    + (Wait × <span className="text-blue-300">{sc.agingFactor}</span>)
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function QueueItem({ job, rank, isTarget, cfg, orgs, prediction }) {
+      const org      = orgs.find(o => o.id===job.orgId);
+      const ageBonus = Math.round(job.wait * cfg.scoring.agingFactor);
+      const base     = job.score - ageBonus;
+      const ttlPct   = Math.min(100, (job.wait/job.ttl)*100);
+
+      // Virtual Cluster prediction badge
+      const pred = prediction;
+      const fmt  = pred ? VC.formatPrediction(pred) : null;
+      const reason = pred ? VC.getReasonLabel(pred.blockingReason) : null;
+
+      return (
+        <div className={`rounded-lg p-3 text-xs space-y-2 transition-all
+          ${isTarget?'bg-purple-900/30 border border-purple-500/60':'bg-slate-800/80 border border-slate-700/60 hover:border-slate-600'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-slate-500 font-mono w-5 text-right">#{rank}</span>
+              <span className="text-white font-semibold">{job.name}</span>
+              <span className="text-slate-500 font-mono">[{job.id}]</span>
+              {isTarget && <span className="text-purple-300">🔒</span>}
+              {(job.skipCount||0)>0 && (
+                <span className={`px-1.5 py-0.5 rounded ${(job.skipCount||0)>=cfg.scheduler.skipThreshold?'bg-red-900/50 text-red-300':'bg-amber-900/50 text-amber-300'}`}>
+                  ×{job.skipCount} skips
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Time-to-Start prediction inline */}
+              {fmt && pred.status==='PREDICTED' && (
+                <span className={`font-mono font-bold ${fmt.css}`} title={`Start in ${fmt.window} (±${pred.variance}%)`}>
+                  ⏱{fmt.label}
+                </span>
+              )}
+              <span className="text-amber-300 font-bold font-mono">{job.score.toLocaleString()}</span>
+            </div>
+          </div>
+
+          <div className="flex gap-3 text-slate-400 flex-wrap">
+            <span>🏢 {org?.name} (P{org?.priority})</span>
+            <span>👤 P{job.userPriority}</span>
+            <span>🔧 P{job.toolPriority}</span>
+            <span>⏳ {S.fmtTime(job.wait)}</span>
+            {reason && pred.blockingReason !== 'NONE' && (
+              <span className={reason.css}>{reason.icon} {reason.label}</span>
+            )}
+          </div>
+
+          <div className="flex gap-2 text-slate-300 flex-wrap">
+            <span className="bg-slate-700/60 px-1.5 py-0.5 rounded">CPU:{job.resources.cpu}</span>
+            <span className="bg-slate-700/60 px-1.5 py-0.5 rounded">MEM:{job.resources.memory}GB</span>
+            <span className="bg-slate-700/60 px-1.5 py-0.5 rounded">GPU:{job.resources.gpu}</span>
+            <span className="bg-slate-700/60 px-1.5 py-0.5 rounded">Est:{S.fmtTime(job.estimatedDuration)}</span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-slate-600">Base: {base.toLocaleString()} + <span className="text-blue-500">Age: +{ageBonus.toLocaleString()}</span></div>
+            <div className="text-slate-600">
+              TTL: <span className={ttlPct>80?'text-red-400':ttlPct>60?'text-amber-400':''}>{S.fmtTime(job.ttl-job.wait)}</span>
+            </div>
+          </div>
+          <div className="resource-bar">
+            <div className="resource-fill" style={{width:`${ttlPct}%`,background:ttlPct>80?'#dc2626':ttlPct>60?'#d97706':'#64748b'}}/>
+          </div>
+        </div>
+      );
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Active + History + Log ───────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function ActivePanel({ jobs, simTime }) {
+      return (
+        <div className="card p-4 space-y-3">
+          <h2 className="text-slate-300 text-xs font-semibold uppercase tracking-wider">
+            Running <span className="ml-2 bg-green-600/30 text-green-300 font-mono px-2 py-0.5 rounded-full text-xs">{jobs.length}</span>
+          </h2>
+          {jobs.length===0 && <div className="text-slate-500 text-xs text-center py-2">No running jobs</div>}
+          <div className="space-y-2 overflow-y-auto" style={{maxHeight:'160px'}}>
+            {jobs.map(j => {
+              const pct = Math.min(100,Math.round((simTime-j.startedAt)/j.estimatedDuration*100));
+              return (
+                <div key={j.id} className="bg-slate-800/60 rounded-lg p-2 text-xs space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-white font-medium">{j.name}</span>
+                    <span className="text-green-400 font-mono">{S.fmtTime(j.remainingDuration)}</span>
+                  </div>
+                  <div className="text-slate-500 flex gap-2">
+                    <span>CPU:{j.resources.cpu}</span><span>MEM:{j.resources.memory}GB</span><span>GPU:{j.resources.gpu}</span>
+                    <span className="ml-auto">{pct}%</span>
+                  </div>
+                  <div className="resource-bar"><div className="resource-fill" style={{width:`${pct}%`,background:'#22c55e'}}/></div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    function HistoryPanel({ completed, evicted }) {
+      return (
+        <div className="card p-4 space-y-2">
+          <h2 className="text-slate-300 text-xs font-semibold uppercase tracking-wider">
+            History <span className="text-slate-600 ml-1">({completed.length} done · {evicted.length} evicted)</span>
+          </h2>
+          <div className="space-y-0.5 overflow-y-auto text-xs" style={{maxHeight:'100px'}}>
+            {completed.slice(0,8).map(j=>(
+              <div key={j.id+'c'} className="flex justify-between text-slate-400">
+                <span>✅ {j.name}</span><span className="text-green-500">{S.fmtTime(j.estimatedDuration)}</span>
+              </div>
+            ))}
+            {evicted.slice(0,4).map(j=>(
+              <div key={j.id+'e'} className="flex justify-between text-slate-500">
+                <span>⏰ {j.name}</span><span className="text-red-500">TTL</span>
+              </div>
+            ))}
+            {completed.length===0 && evicted.length===0 && <div className="text-slate-600 text-center py-1">No history</div>}
+          </div>
+        </div>
+      );
+    }
+
+    function LogPanel({ logs }) {
+      const c = { success:'text-green-400', warn:'text-amber-400', error:'text-red-400', info:'text-slate-300' };
+      return (
+        <div className="card p-4">
+          <h2 className="text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Scheduling Log</h2>
+          <div className="font-mono text-xs space-y-0.5 overflow-y-auto" style={{maxHeight:'130px'}}>
+            {logs.length===0 && <div className="text-slate-600">Press ▶ Run or load presets…</div>}
+            {logs.map(l=>(
+              <div key={l.id} className={c[l.type]}><span className="text-slate-600">[{S.fmtTime(l.t)}]</span> {l.msg}</div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Add Job Modal ────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function AddModal({ cfg, orgs, onAdd, onClose }) {
+      const [f, setF] = useState({
+        name:'Custom Job', orgId:orgs[0]?.id, userPriority:3, toolPriority:2,
+        cpu:2, memory:8, gpu:0, estimatedDuration:60, ttl:cfg.ttlDefault,
+      });
+      const set = (k,v) => setF(p=>({...p,[k]:v}));
+      const org   = orgs.find(o=>o.id===f.orgId);
+      const score = org
+        ? org.priority*cfg.scoring.orgWeight + f.userPriority*cfg.scoring.userWeight + f.toolPriority*cfg.scoring.toolWeight
+        : 0;
+
+      return (
+        <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
+          <div className="card p-6 w-full max-w-md space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="text-white font-bold">Enqueue New Job</h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-white text-2xl">×</button>
+            </div>
+            <div className="space-y-3 text-sm">
+              <F label="Job Name"><input value={f.name} onChange={e=>set('name',e.target.value)} className="cfg-input"/></F>
+              <div className="grid grid-cols-3 gap-2">
+                <F label="Org">
+                  <select value={f.orgId} onChange={e=>set('orgId',e.target.value)} className="cfg-input">
+                    {orgs.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                </F>
+                <F label="User P (1–5)"><input type="number" min="1" max="5" value={f.userPriority} onChange={e=>set('userPriority',Math.min(5,Math.max(1,+e.target.value)))} className="cfg-input"/></F>
+                <F label="Tool P (1–5)"><input type="number" min="1" max="5" value={f.toolPriority} onChange={e=>set('toolPriority',Math.min(5,Math.max(1,+e.target.value)))} className="cfg-input"/></F>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <F label="CPU"><input type="number" min="0" max="128" value={f.cpu} onChange={e=>set('cpu',+e.target.value)} className="cfg-input"/></F>
+                <F label="Memory (GB)"><input type="number" min="0" max="512" value={f.memory} onChange={e=>set('memory',+e.target.value)} className="cfg-input"/></F>
+                <F label="GPU"><input type="number" min="0" max="16" value={f.gpu} onChange={e=>set('gpu',+e.target.value)} className="cfg-input"/></F>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <F label="Duration (s)"><input type="number" min="1" value={f.estimatedDuration} onChange={e=>set('estimatedDuration',+e.target.value)} className="cfg-input"/></F>
+                <F label="TTL (s)"><input type="number" min="10" value={f.ttl} onChange={e=>set('ttl',+e.target.value)} className="cfg-input"/></F>
+              </div>
+              <div className="formula-box">
+                <div className="text-slate-400 text-xs">Initial score:</div>
+                <div className="text-amber-300 font-bold text-xl">{score.toLocaleString()}</div>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={onClose} className="flex-1 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm">Cancel</button>
+              <button onClick={()=>{onAdd({name:f.name,orgId:f.orgId,userPriority:f.userPriority,toolPriority:f.toolPriority,
+                  resources:{cpu:f.cpu,memory:f.memory,gpu:f.gpu},estimatedDuration:f.estimatedDuration,ttl:f.ttl});onClose();}}
+                className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-bold">Enqueue →</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Config Modal ─────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function ConfigModal({ cfg, orgs, onSave, onClose }) {
+      const [lc, setLc] = useState(JSON.parse(JSON.stringify(cfg)));
+      const [lo, setLo] = useState(JSON.parse(JSON.stringify(orgs)));
+      const [tab, setTab] = useState('scoring');
+
+      const setS = (path, val) => {
+        setLc(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          const p = path.split('.');
+          let o = next;
+          for (let i=0; i<p.length-1; i++) o=o[p[i]];
+          o[p[p.length-1]] = isNaN(val) ? val : Number(val);
+          return next;
+        });
+      };
+
+      const setOrg = (idx, field, val) => {
+        setLo(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          if (field.includes('.')) { const [a,b]=field.split('.'); next[idx][a][b]=Number(val); }
+          else next[idx][field] = field==='name' ? val : Number(val);
+          return next;
+        });
+      };
+
+      const s=lc.scoring, sch=lc.scheduler, cl=lc.cluster;
+      const TABS = ['scoring','scheduler','cluster','orgs'];
+
+      return (
+        <div className="fixed inset-0 bg-black/80 flex items-start justify-center z-50 p-4 overflow-y-auto">
+          <div className="card w-full max-w-xl my-4">
+            <div className="flex items-center justify-between p-5 border-b border-slate-700">
+              <h3 className="text-white font-bold">⚙ Configuration</h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-white text-2xl">×</button>
+            </div>
+
+            <div className="flex border-b border-slate-700">
+              {TABS.map(t=>(
+                <button key={t} onClick={()=>setTab(t)}
+                  className={`px-5 py-3 text-sm font-medium capitalize ${tab===t?'text-blue-400 border-b-2 border-blue-400':'text-slate-400 hover:text-slate-200'}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            <div className="p-5 space-y-4">
+              {tab==='scoring' && (
+                <div className="space-y-4">
+                  <div className="formula-box text-xs leading-relaxed">
+                    Score = (OrgP × <span className="text-amber-300">orgWeight</span>)
+                         + (UserP × <span className="text-amber-300">userWeight</span>)
+                         + (ToolP × <span className="text-amber-300">toolWeight</span>)
+                         + (Wait × <span className="text-blue-300">agingFactor</span>)
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <CF label="Org Weight"   value={s.orgWeight}   onChange={v=>setS('scoring.orgWeight',v)}/>
+                    <CF label="User Weight"  value={s.userWeight}  onChange={v=>setS('scoring.userWeight',v)}/>
+                    <CF label="Tool Weight"  value={s.toolWeight}  onChange={v=>setS('scoring.toolWeight',v)}/>
+                    <CF label="Aging Factor" value={s.agingFactor} onChange={v=>setS('scoring.agingFactor',v)}/>
+                  </div>
+                </div>
+              )}
+              {tab==='scheduler' && (
+                <div className="space-y-4">
+                  <div className="formula-box text-xs">
+                    Top-N={'{'}topN{'}'} · skipThreshold={'{'}X{'}'} → Reservation Mode · Backfill ≤ ratio × blocked
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <CF label="Top N"          value={sch.topN}             onChange={v=>setS('scheduler.topN',v)}/>
+                    <CF label="Skip Threshold" value={sch.skipThreshold}    onChange={v=>setS('scheduler.skipThreshold',v)}/>
+                    <CF label="Backfill Ratio" value={sch.backfillMaxRatio} onChange={v=>setS('scheduler.backfillMaxRatio',v)} step="0.05"/>
+                    <CF label="Default TTL"    value={lc.ttlDefault}        onChange={v=>setS('ttlDefault',v)}/>
+                  </div>
+                </div>
+              )}
+              {tab==='cluster' && (
+                <div className="space-y-4">
+                  <div className="formula-box text-xs">Available = Total − Reserved − InUse</div>
+                  <div className="text-slate-300 text-xs font-semibold">Total Capacity</div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <CF label="CPU (cores)" value={cl.total.cpu}    onChange={v=>setS('cluster.total.cpu',v)}/>
+                    <CF label="Memory (GB)" value={cl.total.memory} onChange={v=>setS('cluster.total.memory',v)}/>
+                    <CF label="GPU (cards)" value={cl.total.gpu}    onChange={v=>setS('cluster.total.gpu',v)}/>
+                  </div>
+                  <div className="text-slate-300 text-xs font-semibold">Platform Reserved</div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <CF label="CPU" value={cl.reserved.cpu}    onChange={v=>setS('cluster.reserved.cpu',v)}/>
+                    <CF label="Memory" value={cl.reserved.memory} onChange={v=>setS('cluster.reserved.memory',v)}/>
+                    <CF label="GPU" value={cl.reserved.gpu}    onChange={v=>setS('cluster.reserved.gpu',v)}/>
+                  </div>
+                </div>
+              )}
+              {tab==='orgs' && (
+                <div className="space-y-4">
+                  {lo.map((org,i) => (
+                    <div key={org.id} className="bg-slate-800/60 rounded-lg p-4 space-y-3">
+                      <span className="text-white text-sm font-semibold">{org.name} <span className="text-slate-500 text-xs font-mono">{org.id}</span></span>
+                      <div className="grid grid-cols-4 gap-2">
+                        <CF label="Priority" value={org.priority} onChange={v=>setOrg(i,'priority',v)} min="1" max="10"/>
+                        <CF label="CPU Limit" value={org.limits.cpu} onChange={v=>setOrg(i,'limits.cpu',v)}/>
+                        <CF label="MEM Limit" value={org.limits.memory} onChange={v=>setOrg(i,'limits.memory',v)}/>
+                        <CF label="GPU Limit" value={org.limits.gpu} onChange={v=>setOrg(i,'limits.gpu',v)}/>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 p-5 border-t border-slate-700">
+              <button onClick={onClose} className="flex-1 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm">Cancel</button>
+              <button onClick={()=>{onSave(lc,lo);onClose();}}
+                className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-sm font-bold">✓ Apply</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    function F({ label, children }) {
+      return <div><label className="text-slate-400 text-xs block mb-1">{label}</label>{children}</div>;
+    }
+
+    function CF({ label, value, onChange, step='1', min, max }) {
+      return (
+        <div>
+          <label className="text-slate-400 text-xs block mb-1">{label}</label>
+          <input type="number" step={step} min={min} max={max} value={value}
+            onChange={e=>onChange(e.target.value)} className="cfg-input"/>
+        </div>
+      );
+    }
+
+
+    // ── Mount ─────────────────────────────────────────────────────────────────
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>

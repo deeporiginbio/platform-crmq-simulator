@@ -1,0 +1,63 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.orgCard {
+  border: 1px solid var(--mantine-color-grey-2);
+  border-radius: 10px;
+  padding: 12px 16px;
+  background: #fff;
+}
+
+.orgHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chevron {
+  font-size: 10px;
+  width: 14px;
+  text-align: center;
+}
+
+.poolCard {
+  padding: 12px;
+  border: 1px solid var(--mantine-color-grey-1);
+  border-radius: 8px;
+  background: var(--mantine-color-grey-0);
+}
+
+.poolDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Limit mode pill group */
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--mantine-color-grey-2);
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.pill:hover:not(.pillDisabled) {
+  border-color: var(--mantine-color-indigo-3);
+}
+
+.pillActive {
+  border-color: var(--mantine-color-indigo-5);
+  background: var(--mantine-color-indigo-0);
+  color: var(--mantine-color-indigo-7);
+}
+
+.pillDisabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

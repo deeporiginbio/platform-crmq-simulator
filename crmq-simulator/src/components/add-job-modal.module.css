@@ -1,0 +1,50 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+}
+
+.modal {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 24px;
+  width: 100%;
+  max-width: 448px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.cfgInput {
+  background: #FFFFFF;
+  border: 1px solid #D2D5DB;
+  color: var(--text-primary);
+  border-radius: 12px;
+  padding: 6px 10px;
+  width: 100%;
+  font-size: 12px;
+}
+
+.cfgInput:focus {
+  outline: none;
+  border-color: #4B6AF1;
+}
+
+.formulaBox {
+  background: #F9FAFB;
+  border: 1px solid #D2D5DB;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.scoreValue {
+  color: #B27700;
+  font-weight: 700;
+  font-size: 20px;
+}

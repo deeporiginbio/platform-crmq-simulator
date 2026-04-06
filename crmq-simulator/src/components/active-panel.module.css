@@ -1,0 +1,47 @@
+/* Copyright Deep Origin, Inc. [2019-2026]. All rights reserved. */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: var(--card-shadow);
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.countBadge {
+  background: rgba(17, 164, 104, 0.12);
+  color: #11A468;
+  font-family: monospace;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  margin-left: 8px;
+}
+
+.jobCard {
+  background: #F9FAFB;
+  border: 1px solid #E5E7EA;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.barTrack {
+  height: 8px;
+  border-radius: 4px;
+  background: #E5E7EA;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 4px;
+}
