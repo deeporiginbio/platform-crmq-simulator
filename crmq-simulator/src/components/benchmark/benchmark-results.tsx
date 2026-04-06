@@ -6,6 +6,7 @@ import { Box, Badge, Button, Group, Menu, Stack, Text, Table, Tabs } from '@mant
 import type { BenchmarkSuiteResult, ScenarioResult, ScenarioComparison, AggregatedMetrics, ConfidenceInterval, PairedTestResult, ScenarioPreset } from '@/lib/benchmark';
 import { exportCSV, exportJSON, exportMarkdown } from '@/lib/benchmark';
 import { ScenarioDetails } from '@/components/benchmark/scenario-details';
+import { BenchmarkCharts } from '@/components/benchmark/benchmark-charts';
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -67,13 +68,22 @@ export const BenchmarkResults = ({ result, scenarioPreset }: Props) => {
       {/* Summary header */}
       <Box p="sm" style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8 }}>
         <Group gap="md" justify="space-between">
-          <Group gap="md">
-            <Text size="sm" fw={600} c="green.7">Benchmark Complete</Text>
-            <Text size="xs" c="grey.6">
-              {result.scenarios.length} scenarios × {result.scenarios[0]?.aggregated.runs ?? 0} runs
-              in {duration}s wall-clock
-            </Text>
-          </Group>
+          <Box>
+            <Group gap="md">
+              <Text size="sm" fw={600} c="green.7">Benchmark Complete</Text>
+              <Text size="xs" c="grey.6">
+                {result.scenarios.length} formulas × {result.scenarios[0]?.aggregated.runs ?? 0} runs
+                in {duration}s wall-clock
+              </Text>
+            </Group>
+            {scenarioPreset && (
+              <Group gap="xs" mt={4}>
+                <Text size="xs" c="grey.6">Scenario:</Text>
+                <Badge size="xs" variant="light" color="indigo">{scenarioPreset.name}</Badge>
+                <Text size="xs" c="dimmed" lineClamp={1}>{scenarioPreset.description}</Text>
+              </Group>
+            )}
+          </Box>
           <Menu shadow="md" width={180} position="bottom-end">
             <Menu.Target>
               <Button variant="light" size="xs" color="green">
@@ -93,6 +103,7 @@ export const BenchmarkResults = ({ result, scenarioPreset }: Props) => {
       <Tabs defaultValue="overview" variant="outline">
         <Tabs.List>
           <Tabs.Tab value="overview">Overview</Tabs.Tab>
+          <Tabs.Tab value="charts">Charts</Tabs.Tab>
           <Tabs.Tab value="details">Per-Scenario Details</Tabs.Tab>
           {result.comparisons.length > 0 && (
             <Tabs.Tab value="comparison">Statistical Comparison</Tabs.Tab>
@@ -105,6 +116,11 @@ export const BenchmarkResults = ({ result, scenarioPreset }: Props) => {
         {/* ── Overview Tab ──────────────────────────────────────────────── */}
         <Tabs.Panel value="overview" pt="md">
           <OverviewTable scenarios={result.scenarios} />
+        </Tabs.Panel>
+
+        {/* ── Charts Tab ────────────────────────────────────────────────── */}
+        <Tabs.Panel value="charts" pt="md">
+          <BenchmarkCharts result={result} />
         </Tabs.Panel>
 
         {/* ── Details Tab ───────────────────────────────────────────────── */}

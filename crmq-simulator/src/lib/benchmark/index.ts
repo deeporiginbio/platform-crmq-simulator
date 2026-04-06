@@ -35,3 +35,6 @@ export type { BenchmarkScenarioConfig, BenchmarkSuiteConfig, ScenarioResult, Ben
 
 // Export utilities
 export { exportCSV, exportJSON, exportMarkdown } from './export';
+
+// Re-export store types used by components
+export type { MultiScenarioEntry } from '../benchmark-store';

@@ -100,9 +100,19 @@ export type ProgressCallback = (progress: {
 
 // ── Runner ────────────────────────────────────────────────────────────────
 
-/** Yield control back to the browser so the UI stays responsive. */
+/**
+ * Yield control back to the browser so the UI stays responsive.
+ * Uses MessageChannel instead of setTimeout because browsers
+ * throttle setTimeout to ~1s in background tabs, which would
+ * stall the entire benchmark when the user switches tabs/apps.
+ * MessageChannel.postMessage is NOT subject to this throttling.
+ */
 const yieldToMain = (): Promise<void> =>
-  new Promise(resolve => setTimeout(resolve, 0));
+  new Promise(resolve => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => resolve();
+    ch.port2.postMessage(null);
+  });
 
 /**
  * Run a full benchmark suite (async — yields to browser between DES runs).
