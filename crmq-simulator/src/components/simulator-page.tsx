@@ -60,7 +60,6 @@ export const SimulatorPage = () => {
     current_weighted: 'Current Weighted Score',
     normalized_weighted_sum: 'Normalized Weighted Sum',
     drf_fair_share: 'DRF Fair Share',
-    cfs_vruntime: 'CFS Virtual Runtime',
     balanced_composite: 'Balanced Composite (Deep Origin)',
     strict_fifo: 'Strict FIFO',
   };

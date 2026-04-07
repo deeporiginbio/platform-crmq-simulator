@@ -19,7 +19,6 @@ The simulator supports multiple scheduling strategies:
 - `current_weighted` — Weighted priority scoring
 - `normalized_weighted_sum` — Normalized weighted sum
 - `drf_fair_share` — Dominant Resource Fairness
-- `cfs_vruntime` — Completely Fair Scheduler (virtual runtime)
 - `balanced_composite` — Balanced composite scoring
 - `strict_fifo` — First-in, first-out
 

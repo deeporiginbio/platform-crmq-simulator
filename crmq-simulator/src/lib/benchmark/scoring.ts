@@ -61,7 +61,7 @@ export interface ScoringFormula {
  */
 const currentWeightedScore: ScoringFormula = {
   id: 'current_weighted',
-  name: 'Current Weighted Score (Baseline)',
+  name: 'Weighted Score (CRMQ Design)',
   description: 'Linear additive formula with fixed weights. Uses linear aging. The current production formula.',
   reference: '§1 (current implementation)',
   score: (job, now, config, orgs) => {
@@ -186,79 +186,40 @@ const drfFairShare: ScoringFormula = {
 };
 
 /**
- * CFS-Inspired Virtual Runtime (§3.4, §6.3).
- *
- * Models the Linux CFS concept:
- *   vruntime += actual_time_executed / weight(org)
- *   Schedule the org with the lowest vruntime.
- *
- * Since we can't track actual runtime in a stateless scoring function,
- * we approximate vruntime from orgUsage: sum of resources consumed / org weight.
- * Lower vruntime → higher score (inverted for max-score-wins scheduler).
- */
-const cfsVirtualRuntime: ScoringFormula = {
-  id: 'cfs_vruntime',
-  name: 'CFS Virtual Runtime',
-  description: 'Linux CFS-inspired scheduler: tracks virtual resource consumption per org. Orgs that consumed less get priority. Strongest fairness guarantee.',
-  reference: '§3.4, §6.3',
-  score: (job, now, config, orgs, orgUsage) => {
-    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
-    const wait = Math.max(0, now - job.enqueuedAt);
-
-    // Org weight from priority (CFS: weight = 2^(-(nice/10)))
-    // Map priority [1–10] to nice [-10, +10] → weight
-    const nice = 10 - org.priority * 2;  // priority 5 → nice 0, priority 10 → nice -10
-    const weight = Math.pow(2, -(nice / 10));
-
-    // Compute "virtual resource time" from current usage
-    let vruntime = 0;
-    if (orgUsage) {
-      for (const pool of config.cluster.pools) {
-        const used = orgUsage[job.orgId]?.[pool.type] ?? { cpu: 0, memory: 0, gpu: 0 };
-        const total = {
-          cpu: pool.total.cpu - pool.reserved.cpu,
-          memory: pool.total.memory - pool.reserved.memory,
-          gpu: pool.total.gpu - pool.reserved.gpu,
-        };
-        // Virtual time = resources consumed / weight
-        const cpuVt = total.cpu > 0 ? (used.cpu / total.cpu) / weight : 0;
-        const gpuVt = total.gpu > 0 ? (used.gpu / total.gpu) / weight : 0;
-        vruntime += cpuVt + gpuVt;
-      }
-    }
-
-    // Lower vruntime → higher score (invert)
-    // Add aging to prevent starvation even in CFS model
-    const agingBoost = Math.min(1, Math.log2(1 + wait / 120) / 5);
-
-    return (1 / (1 + vruntime)) * 10000 + agingBoost * 100;
-  },
-  defaultParams: {},
-};
-
-/**
  * Balanced Composite (Deep Origin) — production formula.
  *
  * pool = gpu_requested > 0 ? "mason-gpu" : "mason"
  *
  * org_priority_norm = org_priority / 10
- * aging             = min(AGING_MAX_BOOST, AGING_C × log₂(1 + wait / AGING_TAU))
+ * aging             = min(1.0, (wait / AGING_HORIZON) ^ AGING_EXPONENT)
  * org_load          = org_cpus_in_pool / pool_total_cpu
  * cpu_hours         = cpu_requested × est_duration_hrs
- * cpu_hrs_norm      = log(1 + cpu_hours) / log(1 + MAX_CPU_HOURS)
+ * cpu_hrs_norm      = min(1, log(1 + cpu_hours) / log(1 + MAX_CPU_HOURS))
  *
  * score = 0.35 × org_priority_norm
  *       + 0.25 × aging
  *       + 0.20 × (1 − org_load)
  *       + 0.20 × (1 − cpu_hrs_norm)
+ *
+ * Aging uses a power curve (exponent > 1) so boost is low early
+ * and accelerates toward the end, reaching 1.0 at AGING_HORIZON.
+ *
+ * Org load is CPU-only by design: AWS EKS billing and quota
+ * enforcement are measured in vCPU, so CPU is the authoritative
+ * resource dimension for load scoring.
  */
 const balancedComposite: ScoringFormula = {
   id: 'balanced_composite',
   name: 'Balanced Composite (Deep Origin)',
-  description: 'Production formula: org priority, logarithmic aging, inverse org pool load, and inverse log-normalized CPU-hours. All normalized to [0,1].',
+  description:
+    'Production formula: org priority, power-curve aging'
+    + ' (slow start, aggressive end), inverse org CPU load,'
+    + ' and inverse log-normalized CPU-hours.'
+    + ' All normalized to [0,1].',
   reference: 'Custom (Deep Origin team-designed)',
   score: (job, now, config, orgs, orgUsage) => {
-    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const org =
+      orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
     const wait = Math.max(0, now - job.enqueuedAt);
 
     // Configurable weights
@@ -268,32 +229,47 @@ const balancedComposite: ScoringFormula = {
     const wCpuHrs = 0.20;
 
     // Configurable constants
-    const AGING_C = 0.35;          // aging curve steepness
-    const AGING_TAU = 120;         // aging time scale (seconds)
-    const AGING_MAX_BOOST = 1.0;   // max aging value
-    const MAX_CPU_HOURS = 1000;    // normalization ceiling for cpu_hours
+    const AGING_HORIZON = 21600;   // 6 h — full boost at this wait
+    const AGING_EXPONENT = 2;      // quadratic: slow start, steep end
+    const MAX_CPU_HOURS = 1000;    // normalization ceiling
     const maxPriority = 10;
 
     // 1. Normalized org priority [0, 1]
     const orgPriorityNorm = org.priority / maxPriority;
 
-    // 2. Logarithmic aging [0, agingMaxBoost]
-    const aging = Math.min(AGING_MAX_BOOST, AGING_C * Math.log2(1 + wait / AGING_TAU));
+    // 2. Power-curve aging [0, 1]
+    //    Low boost early, accelerating toward AGING_HORIZON.
+    //    aging = min(1, (wait / horizon) ^ exponent)
+    const aging = Math.min(
+      1,
+      Math.pow(wait / AGING_HORIZON, AGING_EXPONENT),
+    );
 
     // 3. Org load: org_cpus_in_pool / pool_total_cpu
+    //    CPU-only — AWS EKS measures and bills by vCPU,
+    //    so CPU is the authoritative dimension for load.
     let orgLoad = 0;
     if (orgUsage) {
       const poolType = getJobPoolType(job, config);
-      const pool = config.cluster.pools.find(p => p.type === poolType);
+      const pool =
+        config.cluster.pools.find(p => p.type === poolType);
       if (pool) {
-        const used = orgUsage[job.orgId]?.[poolType] ?? { cpu: 0, memory: 0, gpu: 0 };
-        orgLoad = pool.total.cpu > 0 ? Math.min(1, used.cpu / pool.total.cpu) : 0;
+        const used =
+          orgUsage[job.orgId]?.[poolType]
+          ?? { cpu: 0, memory: 0, gpu: 0 };
+        orgLoad = pool.total.cpu > 0
+          ? Math.min(1, used.cpu / pool.total.cpu)
+          : 0;
       }
     }
 
-    // 4. CPU-hours: cpu_requested × estimatedDuration (converted to hours)
-    const cpuHours = job.resources.cpu * (job.estimatedDuration / 3600);
-    const cpuHrsNorm = Math.log(1 + cpuHours) / Math.log(1 + MAX_CPU_HOURS);
+    // 4. CPU-hours: cpu_requested × estimatedDuration (hours)
+    const cpuHours =
+      job.resources.cpu * (job.estimatedDuration / 3600);
+    const cpuHrsNorm = Math.min(
+      1,
+      Math.log(1 + cpuHours) / Math.log(1 + MAX_CPU_HOURS),
+    );
 
     return wPriority * orgPriorityNorm
          + wAging   * aging
@@ -301,8 +277,13 @@ const balancedComposite: ScoringFormula = {
          + wCpuHrs  * (1 - cpuHrsNorm);
   },
   defaultParams: {
-    wPriority: 0.35, wAging: 0.25, wLoad: 0.20, wCpuHrs: 0.20,
-    agingC: 0.35, agingTau: 120, agingMaxBoost: 1.0, maxCpuHours: 1000,
+    wPriority: 0.35,
+    wAging: 0.25,
+    wLoad: 0.20,
+    wCpuHrs: 0.20,
+    agingHorizon: 21600,
+    agingExponent: 2,
+    maxCpuHours: 1000,
   },
 };
 
@@ -327,7 +308,7 @@ const strictFIFO: ScoringFormula = {
 const _registry = new Map<string, ScoringFormula>();
 
 // Register built-in formulas
-[currentWeightedScore, normalizedWeightedSum, drfFairShare, cfsVirtualRuntime, balancedComposite, strictFIFO]
+[currentWeightedScore, normalizedWeightedSum, drfFairShare, balancedComposite, strictFIFO]
   .forEach(f => _registry.set(f.id, f));
 
 /**

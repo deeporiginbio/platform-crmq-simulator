@@ -15,7 +15,16 @@
  */
 
 import type { CRMQConfig, Org, Resources } from './types';
-import type { BenchmarkRun, BenchmarkReport } from './config/types';
+import type {
+  BenchmarkRun,
+  BenchmarkReport,
+} from './config/types';
+import type {
+  BenchmarkSuiteResult,
+} from './benchmark/runner';
+import type {
+  ScenarioPreset,
+} from './benchmark/traffic';
 import { DEFAULT_CONFIG } from './scheduler';
 
 // ── Storage Keys ────────────────────────────────────────────────────────────
@@ -72,12 +81,20 @@ export interface SavedBenchmark {
   run: BenchmarkRun;
 }
 
+/** Serializable multi-scenario entry stored with the report */
+export interface SavedMultiScenarioEntry {
+  preset: ScenarioPreset;
+  result: BenchmarkSuiteResult;
+}
+
 export interface SavedReport {
   id: string;
   name: string;
   createdAt: number;
   updatedAt: number;
   report: BenchmarkReport;
+  /** Raw benchmark entries for re-export */
+  entries?: SavedMultiScenarioEntry[];
 }
 
 // ── Export/Import Envelope ───────────────────────────────────────────────────
@@ -238,20 +255,40 @@ export const listReports = (): SavedReport[] => readList<SavedReport>(KEYS.repor
 export const getReport = (id: string): SavedReport | undefined =>
   listReports().find(r => r.id === id);
 
-export const saveReport = (name: string, report: BenchmarkReport, existingId?: string): SavedReport => {
+export const saveReport = (
+  name: string,
+  report: BenchmarkReport,
+  existingId?: string,
+  entries?: SavedMultiScenarioEntry[],
+): SavedReport => {
   const list = listReports();
   const now = Date.now();
 
   if (existingId) {
-    const idx = list.findIndex(r => r.id === existingId);
+    const idx = list.findIndex(
+      r => r.id === existingId,
+    );
     if (idx >= 0) {
-      list[idx] = { ...list[idx], name, updatedAt: now, report };
+      list[idx] = {
+        ...list[idx],
+        name,
+        updatedAt: now,
+        report,
+        entries,
+      };
       writeList(KEYS.reports, list);
       return list[idx];
     }
   }
 
-  const saved: SavedReport = { id: genId(), name, createdAt: now, updatedAt: now, report };
+  const saved: SavedReport = {
+    id: genId(),
+    name,
+    createdAt: now,
+    updatedAt: now,
+    report,
+    entries,
+  };
   list.unshift(saved);
   writeList(KEYS.reports, list);
   return saved;

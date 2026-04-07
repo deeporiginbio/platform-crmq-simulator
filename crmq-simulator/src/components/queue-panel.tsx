@@ -94,25 +94,28 @@ const computeBreakdown = (
         description: `DRF dominant share (runtime) + within-org score`,
       };
     }
-    case 'cfs_vruntime': {
-      const agingBoost = Math.min(1, Math.log2(1 + job.wait / 120) / 5);
-      return {
-        parts: [
-          { label: 'VRuntime', value: 'runtime' },
-          { label: 'Age boost', value: (agingBoost * 100).toFixed(1), color: 'var(--mantine-color-green-7)' },
-        ],
-        description: `CFS: lower consumption → higher score (wait=${Math.round(job.wait)}s)`,
-      };
-    }
     case 'balanced_composite': {
-      const wPriority = 0.35, wAging = 0.25, wLoad = 0.20, wCpuHrs = 0.20;
-      const AGING_C = 0.35, AGING_TAU = 120, AGING_MAX_BOOST = 1.0, MAX_CPU_HOURS = 1000;
+      const wPriority = 0.35;
+      const wAging = 0.25;
+      const wLoad = 0.20;
+      const wCpuHrs = 0.20;
+      const AGING_HORIZON = 21600;
+      const AGING_EXPONENT = 2;
+      const MAX_CPU_HOURS = 1000;
       const maxPriority = 10;
 
       const orgPriorityNorm = priority / maxPriority;
-      const aging = Math.min(AGING_MAX_BOOST, AGING_C * Math.log2(1 + job.wait / AGING_TAU));
-      const cpuHours = job.resources.cpu * (job.estimatedDuration / 3600);
-      const cpuHrsNorm = Math.log(1 + cpuHours) / Math.log(1 + MAX_CPU_HOURS);
+      const aging = Math.min(
+        1,
+        Math.pow(job.wait / AGING_HORIZON, AGING_EXPONENT),
+      );
+      const cpuHours =
+        job.resources.cpu * (job.estimatedDuration / 3600);
+      const cpuHrsNorm = Math.min(
+        1,
+        Math.log(1 + cpuHours)
+          / Math.log(1 + MAX_CPU_HOURS),
+      );
 
       return {
         parts: [
@@ -121,7 +124,7 @@ const computeBreakdown = (
           { label: 'Load', value: 'runtime' },
           { label: 'CPU-h', value: (wCpuHrs * (1 - cpuHrsNorm)).toFixed(3) },
         ],
-        description: `0.35×pri + 0.25×aging + 0.20×(1−org_load) + 0.20×(1−cpu_hrs) | cpu_hrs=${cpuHours.toFixed(1)} (wait=${Math.round(job.wait)}s)`,
+        description: `0.35×pri + 0.25×age² + 0.20×(1−cpu_load) + 0.20×(1−cpu_hrs) | cpu_hrs=${cpuHours.toFixed(1)} (wait=${Math.round(job.wait)}s)`,
       };
     }
     case 'strict_fifo': {

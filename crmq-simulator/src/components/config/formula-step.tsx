@@ -207,8 +207,10 @@ const BalancedCompositeForm = ({
   onChange,
 }: {
   params: {
-    wPriority: number; wAging: number; wLoad: number; wCpuHrs: number;
-    agingC: number; agingTau: number; agingMaxBoost: number; maxCpuHours: number;
+    wPriority: number; wAging: number;
+    wLoad: number; wCpuHrs: number;
+    agingHorizon: number; agingExponent: number;
+    maxCpuHours: number;
   };
   onChange: (key: string, value: number) => void;
 }) => (
@@ -269,39 +271,28 @@ const BalancedCompositeForm = ({
     </Text>
     <Group gap="sm" grow>
       <NumberInput
-        label="AGING_C"
-        description="Aging curve steepness"
+        label="Aging Horizon"
+        description="Full boost at this wait (seconds)"
         size="xs"
-        value={params.agingC}
-        onChange={(v) => onChange('agingC', Number(v))}
-        min={0.01}
-        max={5}
-        step={0.05}
-        decimalScale={2}
+        value={params.agingHorizon}
+        onChange={(v) => onChange('agingHorizon', Number(v))}
+        min={60}
+        max={86400}
+        step={300}
       />
       <NumberInput
-        label="AGING_TAU"
-        description="Aging time scale (seconds)"
+        label="Aging Exponent"
+        description="Curve shape (2 = quadratic)"
         size="xs"
-        value={params.agingTau}
-        onChange={(v) => onChange('agingTau', Number(v))}
+        value={params.agingExponent}
+        onChange={(v) => onChange('agingExponent', Number(v))}
         min={1}
-        max={3600}
-        step={10}
+        max={5}
+        step={0.5}
+        decimalScale={1}
       />
     </Group>
     <Group gap="sm" grow>
-      <NumberInput
-        label="AGING_MAX_BOOST"
-        description="Maximum aging value"
-        size="xs"
-        value={params.agingMaxBoost}
-        onChange={(v) => onChange('agingMaxBoost', Number(v))}
-        min={0.1}
-        max={10}
-        step={0.1}
-        decimalScale={1}
-      />
       <NumberInput
         label="MAX_CPU_HOURS"
         description="Normalization ceiling for cpu_hours"
@@ -397,9 +388,6 @@ export const FormulaStep = ({
             params={formulaConfig.params}
             onChange={(key, value) => onSetFormulaParam(key, value)}
           />
-        )}
-        {formulaConfig.type === 'cfs_vruntime' && (
-          <NoParamsInfo message="CFS Virtual Runtime has no configurable parameters. It automatically tracks virtual resource consumption per org." />
         )}
         {formulaConfig.type === 'strict_fifo' && (
           <NoParamsInfo message="Strict FIFO has no configurable parameters. Jobs are processed in arrival order." />

@@ -15,7 +15,6 @@ import type {
   CurrentWeightedParams,
   NormalizedWeightedSumParams,
   DrfFairShareParams,
-  CfsVruntimeParams,
   BalancedCompositeParams,
   StrictFifoParams,
 } from '../types';
@@ -43,16 +42,13 @@ export const drfFairShareSchema = z.object({
   tau: z.number().min(1).max(3600),
 });
 
-export const cfsVruntimeSchema = z.object({});
-
 export const balancedCompositeSchema = z.object({
   wPriority: z.number().min(0).max(1),
   wAging: z.number().min(0).max(1),
   wLoad: z.number().min(0).max(1),
   wCpuHrs: z.number().min(0).max(1),
-  agingC: z.number().min(0.01).max(5),
-  agingTau: z.number().min(1).max(3600),
-  agingMaxBoost: z.number().min(0.1).max(10),
+  agingHorizon: z.number().min(60).max(86400),
+  agingExponent: z.number().min(1).max(5),
   maxCpuHours: z.number().min(1).max(100000),
 });
 
@@ -62,7 +58,7 @@ export const strictFifoSchema = z.object({});
 
 const currentWeighted: FormulaDefinition<CurrentWeightedParams> = {
   id: 'current_weighted',
-  label: 'Current Weighted Score (Baseline)',
+  label: 'Weighted Score (CRMQ Design)',
   description: 'Linear additive formula with fixed weights. Uses linear aging. The current production formula.',
   icon: '⚖️',
   schema: currentWeightedSchema,
@@ -105,20 +101,14 @@ const drfFairShare: FormulaDefinition<DrfFairShareParams> = {
   compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],
 };
 
-const cfsVruntime: FormulaDefinition<CfsVruntimeParams> = {
-  id: 'cfs_vruntime',
-  label: 'CFS Virtual Runtime',
-  description: 'Linux CFS-inspired scheduler: tracks virtual resource consumption per org. Orgs that consumed less get priority.',
-  icon: '🔄',
-  schema: cfsVruntimeSchema,
-  defaultParams: {} as CfsVruntimeParams,
-  compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],
-};
-
 const balancedComposite: FormulaDefinition<BalancedCompositeParams> = {
   id: 'balanced_composite',
   label: 'Balanced Composite (Deep Origin)',
-  description: 'Production formula: 0.35×priority + 0.25×aging + 0.20×(1−org_load) + 0.20×(1−cpu_hrs_norm). Aging uses log₂ with configurable steepness; cpu_hours uses log-normalization.',
+  description:
+    'Production formula: 0.35×priority + 0.25×aging'
+    + ' + 0.20×(1−org_load) + 0.20×(1−cpu_hrs_norm).'
+    + ' Power-curve aging (slow start, steep end).'
+    + ' CPU-only org load (AWS EKS billing).',
   icon: '🎯',
   schema: balancedCompositeSchema,
   defaultParams: {
@@ -126,9 +116,8 @@ const balancedComposite: FormulaDefinition<BalancedCompositeParams> = {
     wAging: 0.25,
     wLoad: 0.20,
     wCpuHrs: 0.20,
-    agingC: 0.35,
-    agingTau: 120,
-    agingMaxBoost: 1.0,
+    agingHorizon: 21600,
+    agingExponent: 2,
     maxCpuHours: 1000,
   },
   compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],
@@ -151,7 +140,6 @@ export const FORMULA_REGISTRY: Record<FormulaType, FormulaDefinition<any>> = {
   current_weighted: currentWeighted,
   normalized_weighted_sum: normalizedWeightedSum,
   drf_fair_share: drfFairShare,
-  cfs_vruntime: cfsVruntime,
   balanced_composite: balancedComposite,
   strict_fifo: strictFifo,
 };

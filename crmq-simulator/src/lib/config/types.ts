@@ -81,29 +81,24 @@ export interface DrfFairShareParams {
 }
 
 /**
- * CFS Virtual Runtime (§3.4, §6.3).
- * Linux CFS-inspired scheduler — no configurable params.
- */
-export type CfsVruntimeParams = Record<string, never>;
-
-/**
  * Balanced Composite (Deep Origin) — multi-factor normalized formula.
  *
  * score = wPriority × (org_priority / 10)
- *       + wAging   × min(agingMaxBoost, agingC × log₂(1 + wait / agingTau))
+ *       + wAging   × min(1, (wait / agingHorizon) ^ agingExponent)
  *       + wLoad    × (1 − org_cpus_in_pool / pool_total_cpu)
- *       + wCpuHrs  × (1 − log(1 + cpu_hours) / log(1 + maxCpuHours))
+ *       + wCpuHrs  × (1 − min(1, log(1+cpu_hours) / log(1+maxCpuHours)))
  *
  * where cpu_hours = cpu_requested × estimatedDuration (in hours).
+ * Aging uses a power curve: slow boost early, accelerating toward
+ * agingHorizon. Org load is CPU-only (AWS EKS bills by vCPU).
  */
 export interface BalancedCompositeParams {
   wPriority: number;
   wAging: number;
   wLoad: number;
   wCpuHrs: number;
-  agingC: number;         // aging curve steepness (default 0.35)
-  agingTau: number;       // aging time scale in seconds (default 120)
-  agingMaxBoost: number;  // max aging value (default 1.0)
+  agingHorizon: number;   // wait time for full boost in seconds (default 21600 = 6h)
+  agingExponent: number;  // curve shape: >1 = slow start (default 2 = quadratic)
   maxCpuHours: number;    // normalization ceiling for cpu_hours (default 1000)
 }
 
@@ -121,7 +116,6 @@ export type FormulaConfig =
   | { type: 'current_weighted'; params: CurrentWeightedParams }
   | { type: 'normalized_weighted_sum'; params: NormalizedWeightedSumParams }
   | { type: 'drf_fair_share'; params: DrfFairShareParams }
-  | { type: 'cfs_vruntime'; params: CfsVruntimeParams }
   | { type: 'balanced_composite'; params: BalancedCompositeParams }
   | { type: 'strict_fifo'; params: StrictFifoParams };
 
@@ -265,8 +259,6 @@ export interface BenchmarkReport {
   createdAt: number;
   benchmarkRunId: string;
   summary: string;
-  comparison: {
-    winner: string;    // scenario ID
-    dimensions: Record<string, string>;  // "latency" → scenario ID, "fairness" → scenario ID
-  };
+  formulaNames: string[];
+  scenarioNames: string[];
 }

@@ -27,6 +27,16 @@ import type {
   SerializableSuiteConfig,
   SerializableScenarioConfig,
 } from './workers/benchmark.worker';
+import {
+  saveReport,
+  genId,
+} from './persistence';
+import type {
+  SavedMultiScenarioEntry,
+} from './persistence';
+import type {
+  BenchmarkReport,
+} from './config/types';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -90,6 +100,63 @@ const getWorker = (): Worker | null => {
     }
   }
   return _worker;
+};
+
+// ── Auto-save Report ──────────────────────────────────────────────
+
+/**
+ * Build a BenchmarkReport from completed results
+ * and persist it via the persistence layer.
+ */
+const autoSaveReport = (
+  results: MultiScenarioEntry[],
+) => {
+  if (results.length === 0) return;
+
+  try {
+    const formulaNames =
+      results[0].result.scenarios.map(
+        (s) => s.scenarioName,
+      );
+    const scenarioNames = results.map(
+      (r) => r.preset.name,
+    );
+
+    const scenarioLabel =
+      scenarioNames.join(', ');
+    const reportName =
+      `Benchmark — ${scenarioLabel}`;
+
+    const report: BenchmarkReport = {
+      id: genId(),
+      name: reportName,
+      createdAt: Date.now(),
+      benchmarkRunId: genId(),
+      summary:
+        `Compared ${formulaNames.length}` +
+        ` formula(s) across` +
+        ` ${results.length} scenario(s).`,
+      formulaNames,
+      scenarioNames,
+    };
+
+    const savedEntries: SavedMultiScenarioEntry[] =
+      results.map((r) => ({
+        preset: r.preset,
+        result: r.result,
+      }));
+    saveReport(
+      reportName,
+      report,
+      undefined,
+      savedEntries,
+    );
+  } catch {
+    // Don't break the UI if auto-save fails
+    console.warn(
+      'Failed to auto-save benchmark report',
+    );
+  }
 };
 
 // ── Store ──────────────────────────────────────────────────────────
@@ -235,6 +302,9 @@ export const useBenchmarkStore =
             result: singleResult,
             multiResults: allResults,
           });
+
+          // Auto-save report to localStorage
+          autoSaveReport(allResults);
           return;
         }
 

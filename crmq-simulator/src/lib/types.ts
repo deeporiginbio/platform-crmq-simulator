@@ -165,7 +165,7 @@ export interface CRMQConfig {
   cluster: ClusterConfig;
   ttlDefault: number;
   /** Active scheduling formula. Defaults to current_weighted for backward compat. */
-  formulaType?: 'current_weighted' | 'normalized_weighted_sum' | 'drf_fair_share' | 'cfs_vruntime' | 'balanced_composite' | 'strict_fifo';
+  formulaType?: 'current_weighted' | 'normalized_weighted_sum' | 'drf_fair_share' | 'balanced_composite' | 'strict_fifo';
   /** Full formula params (when formulaType is set). Falls back to `scoring` for current_weighted. */
   formulaParams?: Record<string, unknown>;
 }
