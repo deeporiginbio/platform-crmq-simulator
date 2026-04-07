@@ -218,7 +218,7 @@ const reducer = (state: SchedulingPolicyConfig, action: ConfigAction): Schedulin
  * Converts the current flat limits to the discriminated union format.
  */
 export const buildInitialConfig = (cfg: CRMQConfig, orgs: Org[]): SchedulingPolicyConfig => {
-  const formulaType = normalizeFormulaType(cfg.formulaType ?? 'current_weighted');
+  const formulaType = normalizeFormulaType(cfg.formulaType ?? 'balanced_composite');
   const formulaDef = getFormula(formulaType);
 
   // If a saved formulaParams exists use it, otherwise fall back to scoring (for current_weighted) or defaults

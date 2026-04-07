@@ -161,7 +161,7 @@ export const zeroPoolUsage = (config: CRMQConfig): Record<string, Resources> => 
 // ── Priority Scoring (§3.1) ─────────────────────────────────────────────────
 
 export const calcScore = (job: Job, now: number, config: CRMQConfig, orgs: Org[], orgUsage?: OrgUsageMap): number => {
-  const formulaType = normalizeFormulaType(config.formulaType ?? 'current_weighted');
+  const formulaType = normalizeFormulaType(config.formulaType ?? 'balanced_composite');
 
   // For current_weighted, use the inline production formula for backward compat
   if (formulaType === 'current_weighted') {
