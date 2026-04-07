@@ -30,7 +30,7 @@ const buildLimitValue = (resources: Resources): LimitValue => ({
 });
 
 export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummaryModalProps) => {
-  const formulaType = normalizeFormulaType(cfg.formulaType ?? 'current_weighted');
+  const formulaType = normalizeFormulaType(cfg.formulaType ?? 'balanced_composite');
   const formulaDef = useMemo(() => getFormula(formulaType), [formulaType]);
 
   // Build formula params for display

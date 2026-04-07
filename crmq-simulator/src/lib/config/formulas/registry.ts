@@ -162,10 +162,10 @@ const LEGACY_FORMULA_MAP: Record<string, FormulaType> = {
 export const normalizeFormulaType = (type: string): FormulaType => {
   if (type in FORMULA_REGISTRY) return type as FormulaType;
   if (type in LEGACY_FORMULA_MAP) return LEGACY_FORMULA_MAP[type];
-  return 'current_weighted';
+  return 'balanced_composite';
 };
 
-/** Get formula definition. Falls back to current_weighted for unknown/legacy types. */
+/** Get formula definition. Falls back to balanced_composite for unknown/legacy types. */
 export const getFormula = (type: FormulaType | string): FormulaDefinition => {
   const normalized = normalizeFormulaType(type);
   return FORMULA_REGISTRY[normalized];

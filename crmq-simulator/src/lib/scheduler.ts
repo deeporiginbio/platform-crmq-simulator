@@ -77,6 +77,7 @@ export const DEFAULT_CONFIG: CRMQConfig = {
     ],
   },
   ttlDefault: Infinity,
+  formulaType: 'balanced_composite',
 };
 
 export const DEFAULT_ORGS: Org[] = [

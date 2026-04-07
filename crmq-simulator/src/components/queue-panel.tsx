@@ -144,7 +144,7 @@ const computeBreakdown = (
 
 const QueueItem = memo(({ job, rank, isTarget, cfg, orgs, prediction }: QueueItemProps) => {
   const org = orgs.find((o) => o.id === job.orgId);
-  const formulaType = normalizeFormulaType(cfg.formulaType ?? 'current_weighted');
+  const formulaType = normalizeFormulaType(cfg.formulaType ?? 'balanced_composite');
   const breakdown = computeBreakdown(formulaType, job, cfg, org);
   const fmt = prediction ? formatPrediction(prediction) : null;
   const reason = prediction ? getReasonLabel(prediction.blockingReason) : null;

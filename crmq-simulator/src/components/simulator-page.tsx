@@ -63,7 +63,7 @@ export const SimulatorPage = () => {
     balanced_composite: 'Balanced Composite (Deep Origin)',
     strict_fifo: 'Strict FIFO',
   };
-  const formulaLabel = FORMULA_LABELS[normalizeFormulaType(cfg.formulaType ?? 'current_weighted')] ?? 'Current Weighted Score';
+  const formulaLabel = FORMULA_LABELS[normalizeFormulaType(cfg.formulaType ?? 'balanced_composite')] ?? 'Current Weighted Score';
 
   // Compute per-pool data for display (memoized)
   const poolDisplayData = useMemo(
