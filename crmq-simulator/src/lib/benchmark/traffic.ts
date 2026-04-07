@@ -401,6 +401,13 @@ export interface ScenarioPreset {
   description: string;
   phase: 1 | 2 | 3 | 4 | 5 | 6;
   workloadConfig: Omit<WorkloadConfig, 'orgs' | 'ttlDefault'>;
+  /**
+   * When true, this scenario validates scheduler infrastructure
+   * (dispatching, backfill, queue drain) rather than formula
+   * differentiation. Available in benchmarks but hidden from the
+   * visual simulator's scenario picker.
+   */
+  benchmarkOnly?: boolean;
 }
 
 /**
@@ -414,40 +421,308 @@ export interface ScenarioPreset {
 
 export const SCENARIO_PRESETS: ScenarioPreset[] = [
   // Phase 1 — MVP
+  // Phase 1 — Core Infrastructure (benchmarkOnly)
+  // These validate scheduler mechanics (dispatching, backfill, queue
+  // drain) with random org assignment. They do NOT differentiate
+  // scoring formulas — FIFO wins because there's no real contention.
+  // Kept for regression testing of the scheduling engine itself.
   {
     id: 'steady-state',
     name: 'Steady State',
-    description: 'Sustained 30 jobs/min, 16-48 CPU each, 2-min avg — targets ~80% CPU utilization',
+    description:
+      '[Core] Sustained 30 jobs/min, 16-48 CPU, 2-min avg'
+      + ' — validates dispatch + queue drain at ~80% util.'
+      + ' Random org assignment; does not test formula logic.',
     phase: 1,
+    benchmarkOnly: true,
     workloadConfig: {
       durationSeconds: 1800,
       arrivalPattern: { type: 'poisson', lambdaPerMinute: 30 },
-      sizeDistribution: { type: 'uniform', cpuRange: [16, 48], memoryRange: [64, 192], gpuRange: [0, 0], durationRange: [90, 180] },
+      sizeDistribution: {
+        type: 'uniform',
+        cpuRange: [16, 48],
+        memoryRange: [64, 192],
+        gpuRange: [0, 0],
+        durationRange: [90, 180],
+      },
       seed: 42,
     },
   },
   {
     id: 'burst-traffic',
     name: 'Burst Traffic',
-    description: '200 large jobs arrive at once — saturates cluster, tests queue drain',
+    description:
+      '[Core] 200 large jobs at once — validates queue'
+      + ' saturation and drain. Random org assignment;'
+      + ' does not test formula logic.',
     phase: 1,
+    benchmarkOnly: true,
     workloadConfig: {
       durationSeconds: 1800,
       arrivalPattern: { type: 'burst', count: 200, atTime: 0 },
-      sizeDistribution: { type: 'uniform', cpuRange: [16, 64], memoryRange: [64, 256], gpuRange: [0, 0], durationRange: [120, 300] },
+      sizeDistribution: {
+        type: 'uniform',
+        cpuRange: [16, 64],
+        memoryRange: [64, 256],
+        gpuRange: [0, 0],
+        durationRange: [120, 300],
+      },
       seed: 123,
     },
   },
   {
     id: 'mixed-workload',
     name: 'Mixed Workload',
-    description: '80% small, 15% medium, 5% large — 25 jobs/min, tests backfill effectiveness',
+    description:
+      '[Core] 80% small + 15% medium + 5% large at'
+      + ' 25 jobs/min — validates backfill effectiveness.'
+      + ' Random org assignment; does not test formula logic.',
     phase: 1,
+    benchmarkOnly: true,
     workloadConfig: {
       durationSeconds: 1800,
       arrivalPattern: { type: 'poisson', lambdaPerMinute: 25 },
-      sizeDistribution: { type: 'mixed', small: 80, medium: 15, large: 5 },
+      sizeDistribution: {
+        type: 'mixed', small: 80, medium: 15, large: 5,
+      },
       seed: 456,
+    },
+  },
+
+  // ── Phase 1 — Formula Validation ───────────────────────────────
+  // These scenarios ARE selectable and specifically test formula
+  // differentiation under realistic multi-tenant conditions.
+
+  {
+    id: 'sustained-overload-aging',
+    name: 'Sustained Overload Aging Test',
+    description:
+      'Critical for Balanced Composite: 3 orgs at'
+      + ' ~117% pool capacity for 8h — all under quota,'
+      + ' pool is the bottleneck. Diverse job types per'
+      + ' org exercise the full 6h aging curve.',
+    phase: 1,
+    workloadConfig: {
+      durationSeconds: 28800, // 8 hours
+      arrivalPattern: {
+        type: 'periodic_mix',
+        templates: [
+          // ── deeporigin (quota 1,364 CPU) ──────────────
+          // Large compute: 96 CPU × 9 concurrent = 864
+          // Long-running (6h), high priority — dominates
+          // pool; formula decides vs other orgs' jobs
+          {
+            name: 'DO-large-96cpu',
+            orgId: 'deeporigin',
+            cpu: 96,
+            memory: 384,
+            gpu: 0,
+            durationSeconds: 21600,
+            intervalSeconds: 2400,
+            userPriority: 4,
+            toolPriority: 4,
+          },
+          // Small background: 8 CPU × 6 = 48 CPU
+          // Low priority — tests aging boost for small
+          {
+            name: 'DO-bg-8cpu',
+            orgId: 'deeporigin',
+            cpu: 8,
+            memory: 32,
+            gpu: 0,
+            durationSeconds: 1800,
+            intervalSeconds: 300,
+            userPriority: 1,
+            toolPriority: 1,
+          },
+          // DO total: 864 + 48 = 912 (< 1,364 ✓)
+
+          // ── org-beta (quota 384 CPU) ──────────────────
+          // Medium: 32 CPU × 10 concurrent = 320 CPU
+          {
+            name: 'Beta-med-32cpu',
+            orgId: 'org-beta',
+            cpu: 32,
+            memory: 128,
+            gpu: 0,
+            durationSeconds: 7200,
+            intervalSeconds: 720,
+            userPriority: 3,
+            toolPriority: 3,
+          },
+          // Small fills: 4 CPU × 5 = 20 CPU
+          {
+            name: 'Beta-small-4cpu',
+            orgId: 'org-beta',
+            cpu: 4,
+            memory: 16,
+            gpu: 0,
+            durationSeconds: 900,
+            intervalSeconds: 180,
+            userPriority: 1,
+            toolPriority: 2,
+          },
+          // Beta total: 320 + 20 = 340 (< 384 ✓)
+
+          // ── org-gamma (quota 384 CPU) ─────────────────
+          // Medium-large: 24 CPU × 9 = 216 CPU
+          // 3h duration — mid-range aging (1-3h)
+          {
+            name: 'Gamma-med-24cpu',
+            orgId: 'org-gamma',
+            cpu: 24,
+            memory: 96,
+            gpu: 0,
+            durationSeconds: 10800,
+            intervalSeconds: 1200,
+            userPriority: 2,
+            toolPriority: 3,
+          },
+          // Small: 16 CPU × 7.5 = 120 CPU
+          {
+            name: 'Gamma-small-16cpu',
+            orgId: 'org-gamma',
+            cpu: 16,
+            memory: 64,
+            gpu: 0,
+            durationSeconds: 3600,
+            intervalSeconds: 480,
+            userPriority: 4,
+            toolPriority: 2,
+          },
+          // Gamma total: 216 + 120 = 336 (< 384 ✓)
+        ],
+        // Grand total: DO 912 + Beta 340 + Gamma 336
+        //   = 1,588 CPU → 117% of 1,362 pool
+        // ALL orgs under quota → pool sole bottleneck.
+        // Diverse sizes + priorities → formula ranking
+        // determines which org's jobs dispatch first.
+        // Long durations (1-6h) exercise aging curve.
+      },
+      sizeDistribution: {
+        type: 'fixed',
+        cpu: 0,
+        memory: 0,
+        gpu: 0,
+        duration: 0,
+      },
+      seed: 1337,
+    },
+  },
+  {
+    id: 'multi-tenant-steady-state',
+    name: 'Multi-Tenant Steady State',
+    description:
+      'MVP replacement: 3 orgs at ~113% pool capacity,'
+      + ' all under quota. Mixed job sizes per org create'
+      + ' formula-sensitive dispatch ordering.',
+    phase: 1,
+    workloadConfig: {
+      durationSeconds: 3600, // 1 hour
+      arrivalPattern: {
+        type: 'periodic_mix',
+        templates: [
+          // ── deeporigin (quota 1,364 CPU) ──────────────
+          // Large: 64 CPU, 15min, every 75s
+          // → 12 concurrent × 64 = 768 CPU
+          {
+            name: 'DO-large-64cpu',
+            orgId: 'deeporigin',
+            cpu: 64,
+            memory: 256,
+            gpu: 0,
+            durationSeconds: 900,
+            intervalSeconds: 75,
+            userPriority: 3,
+            toolPriority: 4,
+          },
+          // Small low-pri: 8 CPU, 5min, every 35s
+          // → 8.6 concurrent × 8 = 69 CPU
+          {
+            name: 'DO-small-8cpu',
+            orgId: 'deeporigin',
+            cpu: 8,
+            memory: 32,
+            gpu: 0,
+            durationSeconds: 300,
+            intervalSeconds: 35,
+            userPriority: 1,
+            toolPriority: 1,
+          },
+          // DO total: 768 + 69 = 837 (< 1,364 ✓)
+
+          // ── org-beta (quota 384 CPU) ──────────────────
+          // Medium: 16 CPU, 8min, every 60s
+          // → 8 concurrent × 16 = 128 CPU
+          {
+            name: 'Beta-med-16cpu',
+            orgId: 'org-beta',
+            cpu: 16,
+            memory: 64,
+            gpu: 0,
+            durationSeconds: 480,
+            intervalSeconds: 60,
+            userPriority: 2,
+            toolPriority: 3,
+          },
+          // Large high-pri: 48 CPU, 20min, every 4min
+          // → 5 concurrent × 48 = 240 CPU
+          {
+            name: 'Beta-large-48cpu',
+            orgId: 'org-beta',
+            cpu: 48,
+            memory: 192,
+            gpu: 0,
+            durationSeconds: 1200,
+            intervalSeconds: 240,
+            userPriority: 5,
+            toolPriority: 4,
+          },
+          // Beta total: 128 + 240 = 368 (< 384 ✓)
+
+          // ── org-gamma (quota 384 CPU) ─────────────────
+          // Medium: 32 CPU, 12min, every 90s
+          // → 8 concurrent × 32 = 256 CPU
+          {
+            name: 'Gamma-med-32cpu',
+            orgId: 'org-gamma',
+            cpu: 32,
+            memory: 128,
+            gpu: 0,
+            durationSeconds: 720,
+            intervalSeconds: 90,
+            userPriority: 3,
+            toolPriority: 3,
+          },
+          // Small fills: 8 CPU, 5min, every 30s
+          // → 10 concurrent × 8 = 80 CPU
+          {
+            name: 'Gamma-small-8cpu',
+            orgId: 'org-gamma',
+            cpu: 8,
+            memory: 32,
+            gpu: 0,
+            durationSeconds: 300,
+            intervalSeconds: 30,
+            userPriority: 4,
+            toolPriority: 2,
+          },
+          // Gamma total: 256 + 80 = 336 (< 384 ✓)
+        ],
+        // Grand total: DO 837 + Beta 368 + Gamma 336
+        //   = 1,541 CPU → 113% of 1,362 pool.
+        // All under quota → pool is the bottleneck.
+        // Each org has high-pri + low-pri mix →
+        // formula ranking affects dispatch order.
+      },
+      sizeDistribution: {
+        type: 'fixed',
+        cpu: 0,
+        memory: 0,
+        gpu: 0,
+        duration: 0,
+      },
+      seed: 1338,
     },
   },
 

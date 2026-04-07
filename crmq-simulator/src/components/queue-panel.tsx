@@ -101,14 +101,16 @@ const computeBreakdown = (
       const wCpuHrs = 0.20;
       const AGING_HORIZON = 21600;
       const AGING_EXPONENT = 2;
+      const AGING_FLOOR = 0.10;
       const MAX_CPU_HOURS = 1000;
       const maxPriority = 10;
 
       const orgPriorityNorm = priority / maxPriority;
-      const aging = Math.min(
-        1,
-        Math.pow(job.wait / AGING_HORIZON, AGING_EXPONENT),
-      );
+      const t = Math.min(1, job.wait / AGING_HORIZON);
+      const aging =
+        AGING_FLOOR * t
+        + (1 - AGING_FLOOR)
+          * Math.pow(t, AGING_EXPONENT);
       const cpuHours =
         job.resources.cpu * (job.estimatedDuration / 3600);
       const cpuHrsNorm = Math.min(
@@ -336,7 +338,7 @@ export const QueuePanel = memo(({ queue, simTime, reservTarget, cfg, orgs, predi
                 { phase: 6, label: 'Adversarial' },
               ].flatMap(({ phase, label }, i) => {
                 const items = SCENARIO_PRESETS
-                  .filter(s => s.phase === phase);
+                  .filter(s => s.phase === phase && !s.benchmarkOnly);
                 if (!items.length) return [];
                 return [
                   ...(i > 0

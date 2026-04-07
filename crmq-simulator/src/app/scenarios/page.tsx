@@ -2,7 +2,7 @@
 
 'use client';
 
-import { Box, Badge, Collapse, Divider, Group, Stack, Table, Text } from '@mantine/core';
+import { Box, Badge, Collapse, Divider, Group, Stack, Table, Text, Tooltip } from '@mantine/core';
 import { useState } from 'react';
 import { SCENARIO_PRESETS } from '@/lib/benchmark';
 import type { ScenarioPreset, ArrivalPattern, JobSizeDistribution } from '@/lib/benchmark';
@@ -549,8 +549,18 @@ const ScenarioCard = ({ preset }: { preset: ScenarioPreset }) => {
         onClick={() => setExpanded(v => !v)}
       >
         <Group gap="sm">
-          <Text size="md" fw={700} c="grey.9">{preset.name}</Text>
+          <Text size="md" fw={700} c={preset.benchmarkOnly ? 'dimmed' : 'grey.9'}>{preset.name}</Text>
           <Badge size="xs" variant="light" color={phase.color}>{phase.label}</Badge>
+          {preset.benchmarkOnly && (
+            <Tooltip
+              label="Infrastructure validation only — not available in simulator"
+              withArrow
+              multiline
+              w={220}
+            >
+              <Badge size="xs" variant="outline" color="grey">INFRA TEST ONLY</Badge>
+            </Tooltip>
+          )}
           <Badge size="xs" variant="outline" color="grey">~{jobCount.toLocaleString()} jobs</Badge>
           <Badge size="xs" variant="outline" color="grey">{fmtDuration(wc.durationSeconds)}</Badge>
           <Badge size="xs" variant="outline" color="grey">seed: {wc.seed}</Badge>

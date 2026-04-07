@@ -49,6 +49,7 @@ export const balancedCompositeSchema = z.object({
   wCpuHrs: z.number().min(0).max(1),
   agingHorizon: z.number().min(60).max(86400),
   agingExponent: z.number().min(1).max(5),
+  agingFloor: z.number().min(0).max(0.5),
   maxCpuHours: z.number().min(1).max(100000),
 });
 
@@ -107,8 +108,8 @@ const balancedComposite: FormulaDefinition<BalancedCompositeParams> = {
   description:
     'Production formula: 0.35×priority + 0.25×aging'
     + ' + 0.20×(1−org_load) + 0.20×(1−cpu_hrs_norm).'
-    + ' Power-curve aging (slow start, steep end).'
-    + ' CPU-only org load (AWS EKS billing).',
+    + ' Blended aging (10% linear floor + 90% quadratic,'
+    + ' full at 6h). CPU-only org load.',
   icon: '🎯',
   schema: balancedCompositeSchema,
   defaultParams: {
@@ -118,6 +119,7 @@ const balancedComposite: FormulaDefinition<BalancedCompositeParams> = {
     wCpuHrs: 0.20,
     agingHorizon: 21600,
     agingExponent: 2,
+    agingFloor: 0.10,
     maxCpuHours: 1000,
   },
   compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],

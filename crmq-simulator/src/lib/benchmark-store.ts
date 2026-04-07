@@ -164,7 +164,7 @@ const autoSaveReport = (
 export const useBenchmarkStore =
   create<BenchmarkStore>((set, get) => ({
     phase: 'idle',
-    selectedScenarioIds: ['steady-state'],
+    selectedScenarioIds: ['multi-tenant-steady-state'],
     selectedFormulas: [
       'current_weighted',
       'normalized_weighted_sum',
@@ -197,14 +197,16 @@ export const useBenchmarkStore =
 
     selectAllScenarios: () =>
       set({
-        selectedScenarioIds: SCENARIO_PRESETS.map(
-          (p) => p.id,
-        ),
+        selectedScenarioIds: SCENARIO_PRESETS
+          .filter((p) => !p.benchmarkOnly)
+          .map((p) => p.id),
       }),
 
     clearAllScenarios: () =>
       set({
-        selectedScenarioIds: ['steady-state'],
+        selectedScenarioIds: [
+          'multi-tenant-competition',
+        ],
       }),
 
     toggleFormula: (id) => {

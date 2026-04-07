@@ -191,7 +191,8 @@ const drfFairShare: ScoringFormula = {
  * pool = gpu_requested > 0 ? "mason-gpu" : "mason"
  *
  * org_priority_norm = org_priority / 10
- * aging             = min(1.0, (wait / AGING_HORIZON) ^ AGING_EXPONENT)
+ * t                 = wait / AGING_HORIZON
+ * aging             = min(1, AGING_FLOOR × t + (1 − AGING_FLOOR) × t²)
  * org_load          = org_cpus_in_pool / pool_total_cpu
  * cpu_hours         = cpu_requested × est_duration_hrs
  * cpu_hrs_norm      = min(1, log(1 + cpu_hours) / log(1 + MAX_CPU_HOURS))
@@ -201,8 +202,10 @@ const drfFairShare: ScoringFormula = {
  *       + 0.20 × (1 − org_load)
  *       + 0.20 × (1 − cpu_hrs_norm)
  *
- * Aging uses a power curve (exponent > 1) so boost is low early
- * and accelerates toward the end, reaching 1.0 at AGING_HORIZON.
+ * Aging uses a blended curve: a small linear floor (10%) ensures
+ * aging is never truly zero, while the quadratic component (90%)
+ * keeps the "slow start, aggressive end" shape. Full boost at
+ * AGING_HORIZON (6 h), matching the longest real job durations.
  *
  * Org load is CPU-only by design: AWS EKS billing and quota
  * enforcement are measured in vCPU, so CPU is the authoritative
@@ -212,10 +215,10 @@ const balancedComposite: ScoringFormula = {
   id: 'balanced_composite',
   name: 'Balanced Composite (Deep Origin)',
   description:
-    'Production formula: org priority, power-curve aging'
-    + ' (slow start, aggressive end), inverse org CPU load,'
-    + ' and inverse log-normalized CPU-hours.'
-    + ' All normalized to [0,1].',
+    'Production formula: org priority, blended aging'
+    + ' (10% linear floor + 90% quadratic, full at 6 h),'
+    + ' inverse org CPU load, and inverse log-normalized'
+    + ' CPU-hours. All normalized to [0,1].',
   reference: 'Custom (Deep Origin team-designed)',
   score: (job, now, config, orgs, orgUsage) => {
     const org =
@@ -231,19 +234,22 @@ const balancedComposite: ScoringFormula = {
     // Configurable constants
     const AGING_HORIZON = 21600;   // 6 h — full boost at this wait
     const AGING_EXPONENT = 2;      // quadratic: slow start, steep end
+    const AGING_FLOOR = 0.10;      // 10% linear floor — never fully zero
     const MAX_CPU_HOURS = 1000;    // normalization ceiling
     const maxPriority = 10;
 
     // 1. Normalized org priority [0, 1]
     const orgPriorityNorm = org.priority / maxPriority;
 
-    // 2. Power-curve aging [0, 1]
-    //    Low boost early, accelerating toward AGING_HORIZON.
-    //    aging = min(1, (wait / horizon) ^ exponent)
-    const aging = Math.min(
-      1,
-      Math.pow(wait / AGING_HORIZON, AGING_EXPONENT),
-    );
+    // 2. Blended aging curve [0, 1]
+    //    floor × t + (1 − floor) × t^exp
+    //    Linear floor ensures aging is nonzero from the start;
+    //    quadratic body keeps the accelerating ramp toward 6 h.
+    const t = Math.min(1, wait / AGING_HORIZON);
+    const aging =
+      AGING_FLOOR * t
+      + (1 - AGING_FLOOR)
+        * Math.pow(t, AGING_EXPONENT);
 
     // 3. Org load: org_cpus_in_pool / pool_total_cpu
     //    CPU-only — AWS EKS measures and bills by vCPU,
@@ -283,6 +289,7 @@ const balancedComposite: ScoringFormula = {
     wCpuHrs: 0.20,
     agingHorizon: 21600,
     agingExponent: 2,
+    agingFloor: 0.10,
     maxCpuHours: 1000,
   },
 };

@@ -210,7 +210,7 @@ const BalancedCompositeForm = ({
     wPriority: number; wAging: number;
     wLoad: number; wCpuHrs: number;
     agingHorizon: number; agingExponent: number;
-    maxCpuHours: number;
+    agingFloor: number; maxCpuHours: number;
   };
   onChange: (key: string, value: number) => void;
 }) => (
@@ -293,6 +293,17 @@ const BalancedCompositeForm = ({
       />
     </Group>
     <Group gap="sm" grow>
+      <NumberInput
+        label="Aging Floor"
+        description="Linear floor fraction (0.10 = 10%)"
+        size="xs"
+        value={params.agingFloor}
+        onChange={(v) => onChange('agingFloor', Number(v))}
+        min={0}
+        max={0.5}
+        step={0.05}
+        decimalScale={2}
+      />
       <NumberInput
         label="MAX_CPU_HOURS"
         description="Normalization ceiling for cpu_hours"

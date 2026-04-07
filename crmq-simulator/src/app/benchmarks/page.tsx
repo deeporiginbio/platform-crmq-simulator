@@ -109,10 +109,15 @@ const BenchmarksPage = () => {
   const [expandedScenario, setExpandedScenario] =
     useState<string | null>(null);
 
+  // Selectable presets (exclude benchmarkOnly)
+  const selectablePresets = SCENARIO_PRESETS.filter(
+    (p) => !p.benchmarkOnly,
+  );
+
   // All selected / some selected for bulk toggles
   const allScenariosSelected =
     selectedScenarioIds.length ===
-    SCENARIO_PRESETS.length;
+    selectablePresets.length;
   const allFormulasSelected =
     selectedFormulas.length === formulas.length;
 
@@ -223,16 +228,21 @@ const BenchmarksPage = () => {
                             label: `Phase ${phaseNum}`,
                             color: 'grey',
                           };
+                        const selectable =
+                          presets.filter(
+                            (p) => !p.benchmarkOnly,
+                          );
                         // How many from this phase are selected?
                         const selectedCount =
-                          presets.filter((p) =>
+                          selectable.filter((p) =>
                             selectedScenarioIds.includes(
                               p.id,
                             ),
                           ).length;
                         const allPhaseSelected =
+                          selectable.length > 0 &&
                           selectedCount ===
-                          presets.length;
+                            selectable.length;
 
                         return (
                           <Box
@@ -260,14 +270,14 @@ const BenchmarksPage = () => {
                                 c="dimmed"
                               >
                                 {selectedCount}/
-                                {presets.length}
+                                {selectable.length}
                               </Text>
                               <Button
                                 variant="subtle"
                                 size="compact-xs"
                                 onClick={() => {
                                   const ids =
-                                    presets.map(
+                                    selectable.map(
                                       (p) => p.id,
                                     );
                                   if (
@@ -309,7 +319,9 @@ const BenchmarksPage = () => {
                                   }
                                 }}
                                 disabled={
-                                  isRunning
+                                  isRunning ||
+                                  selectable.length ===
+                                    0
                                 }
                               >
                                 {allPhaseSelected
@@ -336,7 +348,8 @@ const BenchmarksPage = () => {
                                       <Checkbox
                                         size="xs"
                                         checked={
-                                          checked
+                                          checked &&
+                                          !p.benchmarkOnly
                                         }
                                         onChange={() =>
                                           toggleScenario(
@@ -344,7 +357,8 @@ const BenchmarksPage = () => {
                                           )
                                         }
                                         disabled={
-                                          isRunning
+                                          isRunning ||
+                                          !!p.benchmarkOnly
                                         }
                                         mt={2}
                                       />
@@ -368,9 +382,26 @@ const BenchmarksPage = () => {
                                           <Text
                                             size="xs"
                                             fw={500}
+                                            c={p.benchmarkOnly ? 'dimmed' : undefined}
                                           >
                                             {p.name}
                                           </Text>
+                                          {p.benchmarkOnly && (
+                                            <Tooltip
+                                              label="Infrastructure validation only — not for formula comparison"
+                                              withArrow
+                                              multiline
+                                              w={220}
+                                            >
+                                              <Badge
+                                                size="xs"
+                                                variant="outline"
+                                                color="grey"
+                                              >
+                                                INFRA TEST ONLY
+                                              </Badge>
+                                            </Tooltip>
+                                          )}
                                           <Text
                                             size="xs"
                                             c="dimmed"
