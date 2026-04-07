@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   },
 };
 
-export const RootLayout = ({
+const RootLayout = ({
   children,
 }: {
   children: React.ReactNode;

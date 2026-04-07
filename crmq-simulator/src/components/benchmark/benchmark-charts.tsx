@@ -4,8 +4,8 @@
 
 import { useMemo } from 'react';
 import { Box, Group, Stack, Text } from '@mantine/core';
-import createPlotlyComponent from 'react-plotly.js/factory';
-import Plotly from 'plotly.js-dist-min';
+import dynamic from 'next/dynamic';
+import type { PlotParams } from 'react-plotly.js';
 import type {
   BenchmarkSuiteResult,
   ScenarioResult,
@@ -20,8 +20,13 @@ import {
   truncName,
 } from '@/lib/benchmark/chart-utils';
 
-// ── Plotly component (tree-shaken) ─────────────────────────────
-const Plot = createPlotlyComponent(Plotly);
+// ── Plotly component (lazy-loaded to avoid SSR `self` error) ───
+const Plot = dynamic(
+  () => import('plotly.js-dist-min').then((Plotly) =>
+    import('react-plotly.js/factory').then((mod) => mod.default(Plotly.default ?? Plotly)),
+  ),
+  { ssr: false },
+) as React.ComponentType<PlotParams>;
 
 const ciError = (
   scenarios: ScenarioResult[],
