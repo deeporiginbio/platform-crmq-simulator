@@ -2,6 +2,7 @@
 
 'use client';
 
+import { memo } from 'react';
 import { Box, ScrollArea, Stack, Text } from '@mantine/core';
 import type { LogEntry } from '@/lib/types';
 import { fmtTime } from '@/lib/scheduler';
@@ -11,7 +12,7 @@ interface LogPanelProps {
   logs: LogEntry[];
 }
 
-export const LogPanel = ({ logs }: LogPanelProps) => {
+export const LogPanel = memo(({ logs }: LogPanelProps) => {
   const logColorClass: Record<string, string> = {
     success: classes.success,
     warn: classes.warn,
@@ -34,4 +35,6 @@ export const LogPanel = ({ logs }: LogPanelProps) => {
       </ScrollArea>
     </Box>
   );
-};
+});
+
+LogPanel.displayName = 'LogPanel';

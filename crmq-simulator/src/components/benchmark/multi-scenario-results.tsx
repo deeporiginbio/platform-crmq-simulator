@@ -36,9 +36,15 @@ import {
   exportCSV,
   exportJSON,
   exportMarkdown,
+  exportPDFReport,
+  exportMarkdownReport,
+  exportJSONReport,
+  exportCSVReport,
 } from '@/lib/benchmark';
 import { BenchmarkCharts } from
   './benchmark-charts';
+import { CrossScenarioCharts } from
+  './cross-scenario-charts';
 import { ScenarioDetails } from
   './scenario-details';
 
@@ -128,7 +134,6 @@ const phaseMeta: Record<
 > = {
   1: { label: 'Core', color: 'blue' },
   2: { label: 'Advanced', color: 'violet' },
-  3: { label: 'Edge Cases', color: 'orange' },
   4: { label: 'Stress', color: 'red' },
   5: { label: 'Realistic', color: 'teal' },
   6: { label: 'Adversarial', color: 'pink' },
@@ -248,55 +253,57 @@ export const MultiScenarioResults = (
 // ── Multi-Export Menu ───────────────────────────────────────────────
 
 const MultiExportMenu = (
-  { entries }: { entries: MultiScenarioEntry[] },
+  { entries }: {
+    entries: MultiScenarioEntry[];
+  },
 ) => (
   <Menu
     shadow="md"
-    width={220}
+    width={280}
     position="bottom-end"
   >
     <Menu.Target>
-      <Button variant="light" size="xs" color="green">
-        Export All Results
+      <Button
+        variant="light"
+        size="xs"
+        color="green"
+      >
+        Export Report
       </Button>
     </Menu.Target>
     <Menu.Dropdown>
-      <Menu.Label>Download all scenarios</Menu.Label>
-      {entries.map((e) => (
-        <Menu.Item key={e.preset.id} disabled>
-          <Text size="xs" fw={500}>
-            {e.preset.name}
-          </Text>
-        </Menu.Item>
-      ))}
+      <Menu.Label>
+        Consolidated Report
+      </Menu.Label>
+      <Menu.Item
+        onClick={() =>
+          exportPDFReport(entries)
+        }
+      >
+        PDF Report (with charts)
+      </Menu.Item>
+      <Menu.Item
+        onClick={() =>
+          exportMarkdownReport(entries)
+        }
+      >
+        Markdown Report
+      </Menu.Item>
       <Menu.Divider />
-      <Menu.Label>Export each as</Menu.Label>
+      <Menu.Label>Data Export</Menu.Label>
       <Menu.Item
         onClick={() =>
-          entries.forEach((e) =>
-            exportCSV(e.result, e.preset),
-          )
+          exportJSONReport(entries)
         }
       >
-        CSV (all)
+        JSON
       </Menu.Item>
       <Menu.Item
         onClick={() =>
-          entries.forEach((e) =>
-            exportJSON(e.result, e.preset),
-          )
+          exportCSVReport(entries)
         }
       >
-        JSON (all)
-      </Menu.Item>
-      <Menu.Item
-        onClick={() =>
-          entries.forEach((e) =>
-            exportMarkdown(e.result, e.preset),
-          )
-        }
-      >
-        Markdown (all)
+        CSV
       </Menu.Item>
     </Menu.Dropdown>
   </Menu>
@@ -308,8 +315,7 @@ type MetricKey =
   | 'throughput'
   | 'meanWaitTime'
   | 'p95WaitTime'
-  | 'jainsIndex'
-  | 'evictionRate';
+  | 'jainsIndex';
 
 interface MetricDef {
   key: MetricKey;
@@ -348,13 +354,6 @@ const METRICS: MetricDef[] = [
     extract: (a) => a.jainsIndex.mean,
     format: (a) => fmt(a.jainsIndex.mean, 4),
   },
-  {
-    key: 'evictionRate',
-    label: 'Eviction Rate',
-    direction: 'lower-better',
-    extract: (a) => a.evictionRate.mean,
-    format: (a) => fmtPct(a.evictionRate.mean),
-  },
 ];
 
 /**
@@ -388,44 +387,63 @@ const CrossScenarioSummary = (
     overallWins[fn] = 0;
   }
 
-  // Scenario × Metric → winner
+  // Scenario × Metric → winners (plural — ties)
   const scenarioWinners: Record<
     string,
-    Record<string, string>
+    Record<string, string[]>
   > = {};
 
   for (const entry of entries) {
     scenarioWinners[entry.preset.id] = {};
     for (const m of METRICS) {
-      let bestIdx = 0;
       const vals = entry.result.scenarios.map(
         (s) => m.extract(s.aggregated),
       );
+      // Find the best value
+      let bestVal = vals[0];
       for (let i = 1; i < vals.length; i++) {
         if (m.direction === 'higher-better') {
-          if (vals[i] > vals[bestIdx]) bestIdx = i;
+          if (vals[i] > bestVal) bestVal = vals[i];
         } else {
-          if (vals[i] < vals[bestIdx]) bestIdx = i;
+          if (vals[i] < bestVal) bestVal = vals[i];
         }
       }
-      const winner = formulaNames[bestIdx];
+      // Collect ALL formulas that match the best
+      // (within 0.1% relative tolerance for
+      // floating-point equivalence)
+      const winners: string[] = [];
+      for (let i = 0; i < vals.length; i++) {
+        const rel =
+          Math.abs(bestVal) > 1e-9
+            ? Math.abs(vals[i] - bestVal) /
+              Math.abs(bestVal)
+            : Math.abs(vals[i] - bestVal);
+        if (rel < 0.001) {
+          winners.push(formulaNames[i]);
+        }
+      }
       scenarioWinners[entry.preset.id][m.key] =
-        winner;
-      winTally[m.key][winner] =
-        (winTally[m.key][winner] ?? 0) + 1;
-      overallWins[winner] =
-        (overallWins[winner] ?? 0) + 1;
+        winners;
+      for (const w of winners) {
+        winTally[m.key][w] =
+          (winTally[m.key][w] ?? 0) + 1;
+        overallWins[w] =
+          (overallWins[w] ?? 0) + 1;
+      }
     }
   }
 
-  // Find overall best formula
+  // Find overall best formula(s) — handle ties
   const sortedFormulas = [...formulaNames].sort(
     (a, b) =>
       (overallWins[b] ?? 0) -
       (overallWins[a] ?? 0),
   );
-  const bestFormula = sortedFormulas[0];
-  const bestWins = overallWins[bestFormula] ?? 0;
+  const bestWins =
+    overallWins[sortedFormulas[0]] ?? 0;
+  const bestFormulas = sortedFormulas.filter(
+    (fn) => (overallWins[fn] ?? 0) === bestWins,
+  );
   const totalContests =
     entries.length * METRICS.length;
 
@@ -445,15 +463,31 @@ const CrossScenarioSummary = (
           <Text size="xl">🏆</Text>
           <Box>
             <Text size="sm" fw={600} c="violet.7">
-              Best Overall Formula
+              {bestFormulas.length > 1
+                ? 'Tied for Best Overall'
+                : 'Best Overall Formula'}
             </Text>
-            <Text size="lg" fw={700}>
-              {bestFormula}
-            </Text>
+            <Group gap="xs" wrap="wrap">
+              {bestFormulas.map((fn) => (
+                <Text
+                  key={fn}
+                  size="lg"
+                  fw={700}
+                >
+                  {fn}
+                  {bestFormulas.length > 1 &&
+                    fn !==
+                      bestFormulas[
+                        bestFormulas.length - 1
+                      ] &&
+                    ' ·'}
+                </Text>
+              ))}
+            </Group>
             <Text size="xs" c="dimmed">
-              Won {bestWins}/{totalContests} metric
-              contests across {entries.length}{' '}
-              scenarios
+              {bestFormulas.length > 1
+                ? `Each won ${bestWins}/${totalContests} metric contests across ${entries.length} scenarios`
+                : `Won ${bestWins}/${totalContests} metric contests across ${entries.length} scenarios`}
             </Text>
           </Box>
         </Group>
@@ -465,40 +499,89 @@ const CrossScenarioSummary = (
           Formula Rankings (by total wins)
         </Text>
         <Group gap="md" wrap="wrap">
-          {sortedFormulas.map((fn, i) => (
-            <Box
-              key={fn}
-              p="sm"
-              style={{
-                border: '1px solid #E5E7EA',
-                borderRadius: 8,
-                minWidth: 150,
-                background:
-                  i === 0 ? '#FFFFF0' : '#fff',
-              }}
-            >
-              <Group gap="xs">
-                <Text size="lg" fw={700}>
-                  {i === 0
-                    ? '🥇'
-                    : i === 1
-                      ? '🥈'
-                      : i === 2
-                        ? '🥉'
-                        : `#${i + 1}`}
-                </Text>
-                <Box>
-                  <Text size="xs" fw={600}>
-                    {truncName(fn)}
+          {sortedFormulas.map((fn, i) => {
+            // Compute tied rank: find the first
+            // index with the same win count
+            const myWins =
+              overallWins[fn] ?? 0;
+            let rank = 1;
+            for (
+              let j = 0;
+              j < i;
+              j++
+            ) {
+              if (
+                (overallWins[
+                  sortedFormulas[j]
+                ] ?? 0) > myWins
+              ) {
+                rank = j + 2;
+              }
+            }
+            // Find how many share this rank
+            const tied = sortedFormulas.filter(
+              (f) =>
+                (overallWins[f] ?? 0) ===
+                myWins,
+            ).length;
+            const medal =
+              rank === 1
+                ? '🥇'
+                : rank === 2
+                  ? '🥈'
+                  : rank === 3
+                    ? '🥉'
+                    : `#${rank}`;
+            const isTop = rank === 1;
+            return (
+              <Box
+                key={fn}
+                p="sm"
+                style={{
+                  border: isTop
+                    ? '2px solid #C4B5FD'
+                    : '1px solid #E5E7EA',
+                  borderRadius: 8,
+                  minWidth: 150,
+                  background: isTop
+                    ? '#FFFFF0'
+                    : '#fff',
+                }}
+              >
+                <Group gap="xs">
+                  <Text size="lg" fw={700}>
+                    {medal}
                   </Text>
-                  <Text size="xs" c="dimmed">
-                    {overallWins[fn] ?? 0}/
-                    {totalContests} wins
-                  </Text>
-                </Box>
-              </Group>
-            </Box>
-          ))}
+                  <Box>
+                    <Group gap={4}>
+                      <Text
+                        size="xs"
+                        fw={600}
+                      >
+                        {truncName(fn)}
+                      </Text>
+                      {tied > 1 && (
+                        <Badge
+                          size="xs"
+                          variant="light"
+                          color="yellow"
+                        >
+                          tied
+                        </Badge>
+                      )}
+                    </Group>
+                    <Text
+                      size="xs"
+                      c="dimmed"
+                    >
+                      {myWins}/{totalContests}{' '}
+                      wins
+                    </Text>
+                  </Box>
+                </Group>
+              </Box>
+            );
+          })}
         </Group>
       </Box>
 
@@ -548,17 +631,19 @@ const CrossScenarioSummary = (
                     </Group>
                   </Table.Td>
                   {METRICS.map((m) => {
-                    const winner =
+                    const winners =
                       scenarioWinners[
                         e.preset.id
-                      ]?.[m.key] ?? '—';
-                    const isBest =
-                      winner === bestFormula;
+                      ]?.[m.key] ?? [];
+                    const hasBest =
+                      winners.some((w) =>
+                        bestFormulas.includes(w),
+                      );
                     return (
                       <Table.Td
                         key={m.key}
                         style={
-                          isBest
+                          hasBest
                             ? {
                                 background:
                                   '#F0FDF4',
@@ -566,12 +651,38 @@ const CrossScenarioSummary = (
                             : undefined
                         }
                       >
-                        <Text
-                          size="xs"
-                          fw={isBest ? 600 : 400}
-                        >
-                          {truncName(winner)}
-                        </Text>
+                        <Stack gap={0}>
+                          {winners.map((w) => (
+                            <Group
+                              key={w}
+                              gap={4}
+                              wrap="nowrap"
+                            >
+                              <Text
+                                size="xs"
+                                fw={
+                                  bestFormulas.includes(
+                                    w,
+                                  )
+                                    ? 600
+                                    : 400
+                                }
+                              >
+                                {truncName(w)}
+                              </Text>
+                              {winners.length >
+                                1 && (
+                                <Badge
+                                  size="xs"
+                                  variant="light"
+                                  color="yellow"
+                                >
+                                  tie
+                                </Badge>
+                              )}
+                            </Group>
+                          ))}
+                        </Stack>
                       </Table.Td>
                     );
                   })}
@@ -590,29 +701,54 @@ const CrossScenarioSummary = (
                   </Text>
                 </Table.Td>
                 {METRICS.map((m) => {
-                  // Find which formula has most
-                  // wins for this metric
                   const metricWins =
                     winTally[m.key];
-                  const topFormula =
-                    Object.entries(
-                      metricWins,
-                    ).sort(
-                      (a, b) => b[1] - a[1],
-                    )[0];
+                  const sorted = Object.entries(
+                    metricWins,
+                  ).sort(
+                    (a, b) => b[1] - a[1],
+                  );
+                  const topWins =
+                    sorted[0]?.[1] ?? 0;
+                  // All formulas tied at top
+                  const topFormulas =
+                    sorted.filter(
+                      ([, w]) => w === topWins,
+                    );
                   return (
                     <Table.Td key={m.key}>
-                      <Text size="xs" fw={600}>
-                        {truncName(
-                          topFormula?.[0] ?? '—',
+                      <Stack gap={0}>
+                        {topFormulas.map(
+                          ([fn, w]) => (
+                            <Group
+                              key={fn}
+                              gap={4}
+                            >
+                              <Text
+                                size="xs"
+                                fw={600}
+                              >
+                                {truncName(fn)}
+                              </Text>
+                              {topFormulas.length >
+                                1 && (
+                                <Badge
+                                  size="xs"
+                                  variant="light"
+                                  color="yellow"
+                                >
+                                  tie
+                                </Badge>
+                              )}
+                            </Group>
+                          ),
                         )}
-                      </Text>
+                      </Stack>
                       <Text
                         size="xs"
                         c="dimmed"
                       >
-                        {topFormula?.[1] ?? 0}/
-                        {entries.length}
+                        {topWins}/{entries.length}
                       </Text>
                     </Table.Td>
                   );
@@ -622,6 +758,9 @@ const CrossScenarioSummary = (
           </Table>
         </Box>
       </Box>
+
+      {/* Cross-scenario comparison charts */}
+      <CrossScenarioCharts entries={entries} />
 
       {/* Per-metric detail: actual values */}
       <Box>
@@ -676,7 +815,8 @@ const CrossScenarioSummary = (
                         (s) =>
                           m.extract(s.aggregated),
                       );
-                    let bestIdx = 0;
+                    // Find best value
+                    let bestVal = vals[0];
                     for (
                       let i = 1;
                       i < vals.length;
@@ -686,13 +826,36 @@ const CrossScenarioSummary = (
                         m.direction ===
                         'higher-better'
                       ) {
-                        if (vals[i] > vals[bestIdx])
-                          bestIdx = i;
+                        if (vals[i] > bestVal)
+                          bestVal = vals[i];
                       } else {
-                        if (vals[i] < vals[bestIdx])
-                          bestIdx = i;
+                        if (vals[i] < bestVal)
+                          bestVal = vals[i];
                       }
                     }
+                    // Find all tied winners
+                    const bestIndices: number[] =
+                      [];
+                    for (
+                      let i = 0;
+                      i < vals.length;
+                      i++
+                    ) {
+                      const rel =
+                        Math.abs(bestVal) > 1e-9
+                          ? Math.abs(
+                              vals[i] - bestVal,
+                            ) /
+                            Math.abs(bestVal)
+                          : Math.abs(
+                              vals[i] - bestVal,
+                            );
+                      if (rel < 0.001) {
+                        bestIndices.push(i);
+                      }
+                    }
+                    const isTied =
+                      bestIndices.length > 1;
                     return (
                       <Table.Tr
                         key={e.preset.id}
@@ -706,11 +869,16 @@ const CrossScenarioSummary = (
                           </Text>
                         </Table.Td>
                         {e.result.scenarios.map(
-                          (s, i) => (
+                          (s, i) => {
+                            const isBest =
+                              bestIndices.includes(
+                                i,
+                              );
+                            return (
                             <Table.Td
                               key={s.scenarioId}
                               style={
-                                i === bestIdx
+                                isBest
                                   ? {
                                       background:
                                         '#F0FDF4',
@@ -726,7 +894,7 @@ const CrossScenarioSummary = (
                                   size="xs"
                                   ff="monospace"
                                   fw={
-                                    i === bestIdx
+                                    isBest
                                       ? 600
                                       : 400
                                   }
@@ -735,7 +903,8 @@ const CrossScenarioSummary = (
                                     s.aggregated,
                                   )}
                                 </Text>
-                                {i === bestIdx && (
+                                {isBest &&
+                                  !isTied && (
                                   <Badge
                                     size="xs"
                                     variant="light"
@@ -744,9 +913,20 @@ const CrossScenarioSummary = (
                                     Best
                                   </Badge>
                                 )}
+                                {isBest &&
+                                  isTied && (
+                                  <Badge
+                                    size="xs"
+                                    variant="light"
+                                    color="yellow"
+                                  >
+                                    Tied
+                                  </Badge>
+                                )}
                               </Group>
                             </Table.Td>
-                          ),
+                            );
+                          },
                         )}
                       </Table.Tr>
                     );
@@ -1042,15 +1222,6 @@ const OverviewTable = (
           getValue={(a) => a.jainsIndex.mean}
           direction="higher-better"
           highlight
-        />
-        <MRow
-          label="Eviction Rate"
-          scenarios={scenarios}
-          extract={(a) =>
-            fmtCIPct(a.evictionRate)
-          }
-          getValue={(a) => a.evictionRate.mean}
-          direction="lower-better"
         />
         <MRow
           label="Wait Time CoV"
@@ -1419,11 +1590,6 @@ const ComparisonTable = (
                 label: "Jain's Fairness",
                 test: c.jainsIndex,
                 winner: c.winners['jainsIndex'],
-              },
-              {
-                label: 'Eviction Rate',
-                test: c.evictionRate,
-                winner: c.winners['evictionRate'],
               },
             ].map((row) => (
               <Table.Tr key={row.label}>

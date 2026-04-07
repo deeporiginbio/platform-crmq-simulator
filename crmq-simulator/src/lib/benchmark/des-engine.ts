@@ -21,25 +21,22 @@
 import type {
   Job,
   RunningJob,
-  CompletedJob,
-  EvictedJob,
   CRMQConfig,
   Org,
   OrgUsageMap,
   Resources,
-  LogType,
 } from '../types';
 import { getJobPoolType } from '../types';
 import {
   calcScore,
-  runScheduler,
-  completeJobs,
-  evictExpired,
   zeroPoolUsage,
   newJobId,
   resetJobIdCounter,
-  getAvailabilityPerPool,
-  sumResources,
+  fits,
+  add3,
+  sub3,
+  cloneZero,
+  shallowCloneOrgUsage,
 } from '../scheduler';
 import type { GeneratedJob } from './traffic';
 import type { JobEvent, UtilizationSample } from './metrics';
@@ -57,39 +54,77 @@ interface SimEvent {
 }
 
 /**
- * Priority queue for events, ordered by ascending time.
- * Simple sorted-insert for clarity; fine for our event volumes.
+ * Binary min-heap priority queue.
+ * push / pop are O(log n) — critical for
+ * 75K+ events where the old sorted-insert
+ * (O(n) splice per push) was the bottleneck.
  */
 class EventQueue {
-  private events: SimEvent[] = [];
+  private h: SimEvent[] = [];
 
-  push(event: SimEvent): void {
-    // Binary search insertion to maintain sorted order
-    let lo = 0;
-    let hi = this.events.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.events[mid].time <= event.time) lo = mid + 1;
-      else hi = mid;
+  push(e: SimEvent): void {
+    const heap = this.h;
+    heap.push(e);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heap[p].time <= heap[i].time) break;
+      const tmp = heap[p];
+      heap[p] = heap[i];
+      heap[i] = tmp;
+      i = p;
     }
-    this.events.splice(lo, 0, event);
   }
 
   pop(): SimEvent | undefined {
-    return this.events.shift();
+    const heap = this.h;
+    const len = heap.length;
+    if (len === 0) return undefined;
+    const top = heap[0];
+    const last = heap.pop()!;
+    if (heap.length > 0) {
+      heap[0] = last;
+      let i = 0;
+      for (;;) {
+        let s = i;
+        const l = 2 * i + 1;
+        const r = 2 * i + 2;
+        if (
+          l < heap.length &&
+          heap[l].time < heap[s].time
+        )
+          s = l;
+        if (
+          r < heap.length &&
+          heap[r].time < heap[s].time
+        )
+          s = r;
+        if (s === i) break;
+        const tmp = heap[i];
+        heap[i] = heap[s];
+        heap[s] = tmp;
+        i = s;
+      }
+    }
+    return top;
   }
 
   peek(): SimEvent | undefined {
-    return this.events[0];
+    return this.h[0];
   }
 
   get size(): number {
-    return this.events.length;
+    return this.h.length;
   }
 
-  /** Remove all events for a specific job (used when a job is evicted or completed) */
+  /** Remove events for a job (lazy — rare) */
   removeForJob(jobId: string): void {
-    this.events = this.events.filter(e => e.jobId !== jobId);
+    // Rebuild heap without the job's events
+    const filtered = this.h.filter(
+      (e) => e.jobId !== jobId,
+    );
+    this.h = [];
+    for (const e of filtered) this.push(e);
   }
 }
 
@@ -137,39 +172,87 @@ interface EngineState {
   simTime: number;
   queue: Job[];
   active: RunningJob[];
+  /** Map of active job ID → RunningJob for
+   *  O(1) lookup on completion events. */
+  activeMap: Map<string, RunningJob>;
   orgUsage: OrgUsageMap;
   reservMode: boolean;
   reservTarget: string | null;
+  /** Set of active job IDs for O(1) lookup */
+  activeIds: Set<string>;
+  /**
+   * Free resources per pool — maintained
+   * incrementally. Avoids O(active) recompute
+   * on every capacity check.
+   */
+  freeByPool: Record<string, Resources>;
+  /** Queue indexed by ID for O(1) TTL lookup */
+  queueMap: Map<string, Job>;
 }
 
-// ── DES Engine ────────────────────────────────────────────────────────────
+// ── Shared DES Logic ─────────────────────────────────────────────────────
+// Both sync and async variants share the same core event processing.
 
-export const runDES = (desConfig: DESConfig): DESResult => {
+interface DESContext {
+  config: CRMQConfig;
+  orgs: Org[];
+  scoringFn?: ScoringFunction;
+  maxSimTime: number;
+  maxEvents: number;
+  state: EngineState;
+  eq: EventQueue;
+  jobEvents: Map<string, JobEvent>;
+  utilSamples: UtilizationSample[];
+  eventsProcessed: number;
+  /** Last sim-time we sampled utilization */
+  lastUtilSample: number;
+}
+
+const initContext = (
+  desConfig: DESConfig,
+): DESContext => {
   const { config, orgs, workload } = desConfig;
-  const maxSimTime = desConfig.maxSimTime ?? 86400; // 24 hours default
-  const maxEvents = desConfig.maxEvents ?? 1_000_000;
+  const maxSimTime =
+    desConfig.maxSimTime ?? 86400;
+  const maxEvents =
+    desConfig.maxEvents ?? 1_000_000;
 
-  // Reset ID counters for clean run
   resetJobIdCounter();
 
-  // Initialize state
+  // Pre-compute free resources per pool
+  const freeByPool: Record<string, Resources> =
+    {};
+  for (const pool of config.cluster.pools) {
+    freeByPool[pool.type] = {
+      cpu:
+        pool.total.cpu - pool.reserved.cpu,
+      memory:
+        pool.total.memory -
+        pool.reserved.memory,
+      gpu:
+        pool.total.gpu - pool.reserved.gpu,
+    };
+  }
+
   const state: EngineState = {
     simTime: 0,
     queue: [],
     active: [],
-    orgUsage: Object.fromEntries(orgs.map(o => [o.id, zeroPoolUsage(config)])),
+    activeMap: new Map(),
+    orgUsage: Object.fromEntries(
+      orgs.map((o) => [
+        o.id,
+        zeroPoolUsage(config),
+      ]),
+    ),
     reservMode: false,
     reservTarget: null,
+    activeIds: new Set(),
+    freeByPool,
+    queueMap: new Map(),
   };
 
-  // Output collectors
-  const jobEvents: Map<string, JobEvent> = new Map();
-  const utilSamples: UtilizationSample[] = [];
-
-  // Build event queue
   const eq = new EventQueue();
-
-  // Schedule all job arrivals
   for (const job of workload) {
     eq.push({
       time: job.arrivalTime,
@@ -178,258 +261,807 @@ export const runDES = (desConfig: DESConfig): DESResult => {
     });
   }
 
-  let eventsProcessed = 0;
+  return {
+    config,
+    orgs,
+    scoringFn: desConfig.scoringFn,
+    maxSimTime,
+    maxEvents,
+    state,
+    eq,
+    jobEvents: new Map(),
+    utilSamples: [],
+    eventsProcessed: 0,
+    lastUtilSample: -999,
+  };
+};
 
-  // ── Utility: take utilization sample ──────────────────────────────────
+const sampleUtilization = (ctx: DESContext) => {
+  const { config, state } = ctx;
+  const pools: Record<
+    string,
+    { used: Resources; total: Resources }
+  > = {};
+  for (const pool of config.cluster.pools) {
+    const poolJobs = state.active.filter(
+      (j) =>
+        getJobPoolType(j, config) === pool.type,
+    );
+    const used = poolJobs.reduce<Resources>(
+      (acc, j) => ({
+        cpu: acc.cpu + j.resources.cpu,
+        memory: acc.memory + j.resources.memory,
+        gpu: acc.gpu + j.resources.gpu,
+      }),
+      { cpu: 0, memory: 0, gpu: 0 },
+    );
+    pools[pool.type] = {
+      used,
+      total: {
+        cpu: pool.total.cpu - pool.reserved.cpu,
+        memory:
+          pool.total.memory - pool.reserved.memory,
+        gpu: pool.total.gpu - pool.reserved.gpu,
+      },
+    };
+  }
+  ctx.utilSamples.push({
+    time: state.simTime,
+    pools,
+  });
+};
 
-  const sampleUtilization = () => {
-    const pools: Record<string, { used: Resources; total: Resources }> = {};
-    for (const pool of config.cluster.pools) {
-      const poolJobs = state.active.filter(j => getJobPoolType(j, config) === pool.type);
-      const used = poolJobs.reduce<Resources>(
-        (acc, j) => ({ cpu: acc.cpu + j.resources.cpu, memory: acc.memory + j.resources.memory, gpu: acc.gpu + j.resources.gpu }),
-        { cpu: 0, memory: 0, gpu: 0 },
-      );
-      pools[pool.type] = {
-        used,
-        total: {
-          cpu: pool.total.cpu - pool.reserved.cpu,
-          memory: pool.total.memory - pool.reserved.memory,
-          gpu: pool.total.gpu - pool.reserved.gpu,
-        },
+/** Result flags from applying an event. */
+interface ApplyResult {
+  /** Something changed — need scheduling. */
+  changed: boolean;
+  /** A running job completed (capacity freed). */
+  capacityFreed: boolean;
+}
+
+const APPLY_NOOP: ApplyResult = {
+  changed: false,
+  capacityFreed: false,
+};
+
+/**
+ * Apply a single event's state changes WITHOUT
+ * calling runScheduler.
+ */
+const applyEvent = (
+  ctx: DESContext,
+): ApplyResult => {
+  const { config, state, eq, jobEvents } = ctx;
+  const event = eq.pop()!;
+  ctx.eventsProcessed++;
+
+  if (event.time > ctx.maxSimTime)
+    return APPLY_NOOP;
+  state.simTime = event.time;
+
+  switch (event.type) {
+    case 'JOB_ARRIVAL': {
+      const tmpl = event.jobTemplate!;
+      const job: Job = {
+        id: newJobId(),
+        name: tmpl.name,
+        orgId: tmpl.orgId,
+        userPriority: tmpl.userPriority,
+        toolPriority: tmpl.toolPriority,
+        resources: { ...tmpl.resources },
+        estimatedDuration:
+          tmpl.estimatedDuration,
+        ttl: tmpl.ttl,
+        enqueuedAt: state.simTime,
+        skipCount: 0,
+      };
+      state.queue.push(job);
+      state.queueMap.set(job.id, job);
+      jobEvents.set(job.id, {
+        jobId: job.id,
+        jobName: job.name,
+        orgId: job.orgId,
+        resources: { ...job.resources },
+        poolType: getJobPoolType(job, config),
+        enqueuedAt: state.simTime,
+        startedAt: null,
+        completedAt: null,
+        evictedAt: null,
+        estimatedDuration:
+          job.estimatedDuration,
+      });
+      if (isFinite(job.ttl)) {
+        eq.push({
+          time: state.simTime + job.ttl,
+          type: 'TTL_EXPIRY',
+          jobId: job.id,
+        });
+      }
+      return {
+        changed: true,
+        capacityFreed: false,
       };
     }
-    utilSamples.push({ time: state.simTime, pools });
-  };
-
-  // ── Main Event Loop ──────────────────────────────────────────────────
-
-  while (eq.size > 0 && eventsProcessed < maxEvents) {
-    const event = eq.pop()!;
-    eventsProcessed++;
-
-    // Safety: don't exceed max sim time
-    if (event.time > maxSimTime) break;
-
-    // Advance sim time
-    state.simTime = event.time;
-
-    switch (event.type) {
-      case 'JOB_ARRIVAL': {
-        const tmpl = event.jobTemplate!;
-        const job: Job = {
-          id: newJobId(),
-          name: tmpl.name,
-          orgId: tmpl.orgId,
-          userPriority: tmpl.userPriority,
-          toolPriority: tmpl.toolPriority,
-          resources: { ...tmpl.resources },
-          estimatedDuration: tmpl.estimatedDuration,
-          ttl: tmpl.ttl,
-          enqueuedAt: state.simTime,
-          skipCount: 0,
-        };
-
-        state.queue.push(job);
-
-        // Record event
-        jobEvents.set(job.id, {
-          jobId: job.id,
-          jobName: job.name,
-          orgId: job.orgId,
-          resources: { ...job.resources },
-          poolType: getJobPoolType(job, config),
-          enqueuedAt: state.simTime,
-          startedAt: null,
-          completedAt: null,
-          evictedAt: null,
-          estimatedDuration: job.estimatedDuration,
-        });
-
-        // Schedule TTL expiry event (skip if TTL is infinite — jobs never expire)
-        if (isFinite(job.ttl)) {
-          eq.push({
-            time: state.simTime + job.ttl,
-            type: 'TTL_EXPIRY',
-            jobId: job.id,
-          });
-        }
-
-        break;
+    case 'JOB_COMPLETION': {
+      const jobId = event.jobId!;
+      // O(1) lookup via activeMap
+      const job = state.activeMap.get(jobId);
+      if (!job) return APPLY_NOOP;
+      state.activeMap.delete(jobId);
+      state.activeIds.delete(jobId);
+      // Remove from active array — swap with
+      // last for O(1) instead of splice O(n)
+      const ri = state.active.indexOf(job);
+      if (ri >= 0) {
+        const last =
+          state.active[state.active.length - 1];
+        state.active[ri] = last;
+        state.active.pop();
       }
-
-      case 'JOB_COMPLETION': {
-        const jobId = event.jobId!;
-        const runningIdx = state.active.findIndex(j => j.id === jobId);
-        if (runningIdx === -1) break; // already handled
-
-        const job = state.active[runningIdx];
-        state.active.splice(runningIdx, 1);
-
-        // Release resources from org usage
-        const poolType = getJobPoolType(job, config);
-        const orgPools = state.orgUsage[job.orgId];
-        if (orgPools?.[poolType]) {
-          const p = orgPools[poolType];
-          orgPools[poolType] = {
-            cpu: p.cpu - job.resources.cpu,
-            memory: p.memory - job.resources.memory,
-            gpu: p.gpu - job.resources.gpu,
-          };
-        }
-
-        // Update event record
-        const ev = jobEvents.get(jobId);
-        if (ev) ev.completedAt = state.simTime;
-
-        // Remove any lingering TTL event for this job
-        eq.removeForJob(jobId);
-
-        break;
-      }
-
-      case 'TTL_EXPIRY': {
-        const jobId = event.jobId!;
-        const queueIdx = state.queue.findIndex(j => j.id === jobId);
-        if (queueIdx === -1) break; // already dispatched or evicted
-
-        // Only evict if actually expired (check age)
-        const job = state.queue[queueIdx];
-        const age = state.simTime - job.enqueuedAt;
-        if (age < job.ttl) break; // not yet expired (arrival of event was approximate)
-
-        state.queue.splice(queueIdx, 1);
-
-        const ev = jobEvents.get(jobId);
-        if (ev) ev.evictedAt = state.simTime;
-
-        // If reservation target was evicted, clear reservation
-        if (state.reservMode && state.reservTarget === jobId) {
-          state.reservMode = false;
-          state.reservTarget = null;
-        }
-
-        break;
-      }
-    }
-
-    // ── Try Scheduling ──────────────────────────────────────────────────
-    // After every event, try to dispatch queued jobs.
-    // Loop until no more dispatches happen (fill all available capacity).
-
-    let dispatching = true;
-    while (dispatching && state.queue.length > 0) {
-      const result = runScheduler(
-        state.queue,
-        state.active,
-        state.orgUsage,
-        state.reservMode,
-        state.reservTarget,
-        state.simTime,
+      const poolType = getJobPoolType(
+        job,
         config,
-        orgs,
-        undefined, // no logging in headless mode
-        desConfig.scoringFn, // pluggable formula
       );
-
-      state.queue = result.queue as Job[];
-      state.reservMode = result.reservMode;
-      state.reservTarget = result.reservTarget;
-
-      // Detect newly dispatched jobs
-      const newActive = result.active.filter(
-        a => !state.active.some(sa => sa.id === a.id),
-      );
-
-      state.active = result.active;
-      state.orgUsage = result.orgUsage;
-
-      if (newActive.length === 0) {
-        dispatching = false;
-      } else {
-        // Schedule completion events for newly dispatched jobs
-        for (const job of newActive) {
-          const completionTime = state.simTime + job.remainingDuration;
-          eq.push({
-            time: completionTime,
-            type: 'JOB_COMPLETION',
-            jobId: job.id,
-          });
-
-          // Update event record
-          const ev = jobEvents.get(job.id);
-          if (ev) ev.startedAt = state.simTime;
-
-          // Remove TTL event since job is now running
-          eq.removeForJob(job.id);
-          // Re-add completion event (removeForJob removed it too)
-          eq.push({
-            time: completionTime,
-            type: 'JOB_COMPLETION',
-            jobId: job.id,
-          });
-        }
+      // Update org usage
+      const orgPools =
+        state.orgUsage[job.orgId];
+      if (orgPools?.[poolType]) {
+        const p = orgPools[poolType];
+        orgPools[poolType] = {
+          cpu: p.cpu - job.resources.cpu,
+          memory:
+            p.memory - job.resources.memory,
+          gpu: p.gpu - job.resources.gpu,
+        };
       }
+      // Update incremental free pool
+      const fp = state.freeByPool[poolType];
+      if (fp) {
+        fp.cpu += job.resources.cpu;
+        fp.memory += job.resources.memory;
+        fp.gpu += job.resources.gpu;
+      }
+      const ev = jobEvents.get(jobId);
+      if (ev) ev.completedAt = state.simTime;
+      return {
+        changed: true,
+        capacityFreed: true,
+      };
     }
+    case 'TTL_EXPIRY': {
+      const jobId = event.jobId!;
+      // O(1) lookup via queueMap
+      const job = state.queueMap.get(jobId);
+      if (!job) return APPLY_NOOP;
+      const age =
+        state.simTime - job.enqueuedAt;
+      if (age < job.ttl) return APPLY_NOOP;
+      // Remove from queue array
+      const qi = state.queue.indexOf(job);
+      if (qi >= 0) {
+        const last =
+          state.queue[state.queue.length - 1];
+        state.queue[qi] = last;
+        state.queue.pop();
+      }
+      state.queueMap.delete(jobId);
+      const ev = jobEvents.get(jobId);
+      if (ev) ev.evictedAt = state.simTime;
+      if (
+        state.reservMode &&
+        state.reservTarget === jobId
+      ) {
+        state.reservMode = false;
+        state.reservTarget = null;
+      }
+      return {
+        changed: true,
+        capacityFreed: false,
+      };
+    }
+  }
+  return APPLY_NOOP;
+};
 
-    // Sample utilization after state changes
-    sampleUtilization();
+/** Utilization sampling interval (sim-seconds) */
+const UTIL_SAMPLE_INTERVAL = 30;
+
+/**
+ * O(pools) capacity check using incremental
+ * freeByPool. No iteration over active jobs.
+ */
+const hasAnyCapacityFast = (
+  freeByPool: Record<string, Resources>,
+  minJobRes: Resources,
+): boolean => {
+  for (const pt in freeByPool) {
+    const f = freeByPool[pt];
+    if (
+      f.cpu >= minJobRes.cpu &&
+      f.memory >= minJobRes.memory &&
+      f.gpu >= minJobRes.gpu
+    )
+      return true;
+  }
+  return false;
+};
+
+// ── Bulk Dispatch (DES-optimized) ───────────
+
+interface ScoredJob extends Job {
+  _score: number;
+}
+
+/**
+ * Score + sort the queue ONCE, then dispatch
+ * all fitting jobs in a single pass. Mirrors
+ * the logic in runScheduler (org quotas, pool
+ * capacity, reservation mode, backfilling) but
+ * avoids re-scoring on every dispatch.
+ *
+ * This is the key DES optimization: reduces
+ * scheduling from O(D × N log N) to O(N log N)
+ * where D = dispatches per batch, N = queue len.
+ */
+const desBulkDispatch = (
+  ctx: DESContext,
+): void => {
+  const {
+    config,
+    orgs,
+    scoringFn,
+    state,
+    eq,
+  } = ctx;
+  const sch = config.scheduler;
+
+  // Score + sort once
+  const scoreFn = scoringFn
+    ? (j: Job) =>
+        scoringFn(
+          j,
+          state.simTime,
+          config,
+          orgs,
+          state.orgUsage,
+        )
+    : (j: Job) =>
+        calcScore(
+          j,
+          state.simTime,
+          config,
+          orgs,
+          state.orgUsage,
+        );
+
+  const ranked: ScoredJob[] = state.queue
+    .map((j) => ({ ...j, _score: scoreFn(j) }))
+    .sort((a, b) => b._score - a._score);
+
+  // Working copies for mutation during pass
+  const availByPool: Record<string, Resources> =
+    {};
+  for (const pt in state.freeByPool) {
+    availByPool[pt] = {
+      ...state.freeByPool[pt],
+    };
+  }
+  let orgUsage = shallowCloneOrgUsage(
+    state.orgUsage,
+  );
+  let reservMode = state.reservMode;
+  let reservTarget = state.reservTarget;
+
+  // Validate reservation target
+  if (
+    reservMode &&
+    reservTarget &&
+    !ranked.find((j) => j.id === reservTarget)
+  ) {
+    reservMode = false;
+    reservTarget = null;
   }
 
-  // ── Drain remaining active jobs ─────────────────────────────────────
-  // Process remaining completion events even if queue is empty
-  while (eq.size > 0 && eventsProcessed < maxEvents) {
-    const event = eq.pop()!;
+  const topN = ranked.slice(0, sch.topN);
+
+  // Ensure reservation target is in topN
+  if (reservMode && reservTarget) {
+    if (!topN.some((j) => j.id === reservTarget)) {
+      const t = ranked.find(
+        (j) => j.id === reservTarget,
+      );
+      if (t) topN.push(t);
+    }
+  }
+
+  const dispatched = new Set<string>();
+  // Track which jobs were skipped (for backfill)
+  let blockedTopJob: ScoredJob | null = null;
+
+  for (const job of topN) {
+    if (dispatched.has(job.id)) continue;
+
+    const poolType = getJobPoolType(
+      job,
+      config,
+    );
+    const avail = availByPool[poolType];
+    if (!avail) continue;
+
+    // Gate: Org quota
+    const org = orgs.find(
+      (o) => o.id === job.orgId,
+    );
+    const orgLimits =
+      org?.limits[poolType] ?? {
+        cpu: 9999,
+        memory: 9999,
+        gpu: 9999,
+      };
+    const orgPools =
+      orgUsage[job.orgId] ??
+      zeroPoolUsage(config);
+    const orgUsedInPool =
+      orgPools[poolType] ?? cloneZero();
+
+    const orgOk =
+      orgUsedInPool.cpu + job.resources.cpu <=
+        orgLimits.cpu &&
+      orgUsedInPool.memory +
+        job.resources.memory <=
+        orgLimits.memory &&
+      orgUsedInPool.gpu + job.resources.gpu <=
+        orgLimits.gpu;
+    if (!orgOk) continue;
+
+    // Gate: Reservation mode
+    if (
+      reservMode &&
+      reservTarget &&
+      job.id !== reservTarget
+    ) {
+      continue;
+    }
+
+    // Gate: Pool capacity
+    if (!fits(job.resources, avail)) {
+      // Track skip count for reservation
+      job.skipCount = (job.skipCount || 0) + 1;
+      if (
+        job.skipCount > sch.skipThreshold &&
+        !reservMode
+      ) {
+        reservMode = true;
+        reservTarget = job.id;
+      }
+      // Remember for backfilling
+      if (!blockedTopJob) blockedTopJob = job;
+
+      // Backfill: find a smaller job that fits
+      const isReservTarget =
+        reservMode &&
+        reservTarget === job.id;
+      if (
+        (!reservMode && blockedTopJob === job) ||
+        isReservTarget
+      ) {
+        for (const bf of ranked) {
+          if (dispatched.has(bf.id)) continue;
+          if (bf.id === job.id) continue;
+          if (
+            !isReservTarget &&
+            bf._score >= job._score
+          )
+            continue;
+          const bfPool = getJobPoolType(
+            bf,
+            config,
+          );
+          const bfAvail = availByPool[bfPool];
+          if (
+            !bfAvail ||
+            !fits(bf.resources, bfAvail)
+          )
+            continue;
+          if (
+            bf.estimatedDuration >
+            job.estimatedDuration *
+              sch.backfillMaxRatio
+          )
+            continue;
+          // Check org quota for backfill
+          const bfOrgPools =
+            orgUsage[bf.orgId] ??
+            zeroPoolUsage(config);
+          const bfOrgUsed =
+            bfOrgPools[bfPool] ?? cloneZero();
+          const bfOrg = orgs.find(
+            (o) => o.id === bf.orgId,
+          );
+          const bfLimits =
+            bfOrg?.limits[bfPool] ?? {
+              cpu: 9999,
+              memory: 9999,
+              gpu: 9999,
+            };
+          if (
+            bfOrgUsed.cpu + bf.resources.cpu >
+              bfLimits.cpu ||
+            bfOrgUsed.memory +
+              bf.resources.memory >
+              bfLimits.memory ||
+            bfOrgUsed.gpu + bf.resources.gpu >
+              bfLimits.gpu
+          )
+            continue;
+          // Dispatch backfill
+          dispatched.add(bf.id);
+          availByPool[bfPool] = sub3(
+            availByPool[bfPool],
+            bf.resources,
+          );
+          const bfDispPools = {
+            ...bfOrgPools,
+          };
+          bfDispPools[bfPool] = add3(
+            bfDispPools[bfPool],
+            bf.resources,
+          );
+          orgUsage = {
+            ...orgUsage,
+            [bf.orgId]: bfDispPools,
+          };
+          break; // one backfill per blocked job
+        }
+      }
+      continue;
+    }
+
+    // ✅ DISPATCH
+    dispatched.add(job.id);
+    availByPool[poolType] = sub3(
+      availByPool[poolType],
+      job.resources,
+    );
+    const dispOrgPools = {
+      ...(orgUsage[job.orgId] ??
+        zeroPoolUsage(config)),
+    };
+    dispOrgPools[poolType] = add3(
+      dispOrgPools[poolType],
+      job.resources,
+    );
+    orgUsage = {
+      ...orgUsage,
+      [job.orgId]: dispOrgPools,
+    };
+    if (
+      reservMode &&
+      reservTarget === job.id
+    ) {
+      reservMode = false;
+      reservTarget = null;
+    }
+  }
+
+  // Apply dispatch results to state
+  if (dispatched.size > 0) {
+    const newQueue: Job[] = [];
+    state.queueMap.clear();
+    for (const j of ranked) {
+      if (!dispatched.has(j.id)) {
+        const { _score: _, ...clean } = j;
+        const job = clean as Job;
+        newQueue.push(job);
+        state.queueMap.set(job.id, job);
+      }
+    }
+    state.queue = newQueue;
+    state.orgUsage = orgUsage;
+    state.reservMode = reservMode;
+    state.reservTarget = reservTarget;
+
+    // Update freeByPool + active + events
+    for (const j of ranked) {
+      if (!dispatched.has(j.id)) continue;
+      const running: RunningJob = {
+        ...j,
+        startedAt: state.simTime,
+        remainingDuration:
+          j.estimatedDuration,
+      };
+      state.active.push(running);
+      state.activeIds.add(j.id);
+      state.activeMap.set(j.id, running);
+      const pt = getJobPoolType(j, config);
+      const fp = state.freeByPool[pt];
+      if (fp) {
+        fp.cpu -= j.resources.cpu;
+        fp.memory -= j.resources.memory;
+        fp.gpu -= j.resources.gpu;
+      }
+      eq.push({
+        time:
+          state.simTime +
+          running.remainingDuration,
+        type: 'JOB_COMPLETION',
+        jobId: j.id,
+      });
+      const ev = ctx.jobEvents.get(j.id);
+      if (ev) ev.startedAt = state.simTime;
+    }
+  } else {
+    // Update skip counts + rebuild queueMap
+    state.queueMap.clear();
+    state.queue = ranked.map((j) => {
+      const { _score: _, ...clean } = j;
+      const job = clean as Job;
+      state.queueMap.set(job.id, job);
+      return job;
+    });
+    state.reservMode = reservMode;
+    state.reservTarget = reservTarget;
+  }
+};
+
+/**
+ * Process all events at the current timestamp
+ * (batch), then run the scheduler once.
+ * Returns false when there are no more events.
+ *
+ * Key optimization: if no capacity was freed in
+ * this batch (only arrivals/TTL) AND the cluster
+ * was already full, skip the expensive
+ * runScheduler call entirely.
+ */
+const processBatch = (
+  ctx: DESContext,
+): boolean => {
+  const {
+    config,
+    orgs,
+    scoringFn,
+    state,
+    eq,
+  } = ctx;
+
+  if (eq.size === 0) return false;
+
+  // Peek at the next timestamp
+  const nextTime = eq.peek()!.time;
+  if (nextTime > ctx.maxSimTime) return false;
+
+  // Drain all events at this timestamp
+  let needsSchedule = false;
+  let capacityFreed = false;
+  while (
+    eq.size > 0 &&
+    eq.peek()!.time === nextTime &&
+    ctx.eventsProcessed < ctx.maxEvents
+  ) {
+    const r = applyEvent(ctx);
+    if (r.changed) needsSchedule = true;
+    if (r.capacityFreed) capacityFreed = true;
+  }
+
+  // Nothing changed or queue empty → done
+  if (
+    !needsSchedule ||
+    state.queue.length === 0
+  )
+    return true;
+
+  // Fast-path: if no capacity was freed (only
+  // arrivals or TTL expiries), check if the
+  // cluster has any room at all. If not, the
+  // scheduler would score+sort 1000+ jobs only
+  // to find nothing fits — skip entirely.
+  // Uses incremental freeByPool — O(pools).
+  if (!capacityFreed) {
+    const minRes: Resources = {
+      cpu: 1,
+      memory: 1,
+      gpu: 0,
+    };
+    if (
+      !hasAnyCapacityFast(
+        state.freeByPool,
+        minRes,
+      )
+    ) {
+      if (
+        state.simTime - ctx.lastUtilSample >=
+        UTIL_SAMPLE_INTERVAL
+      ) {
+        sampleUtilization(ctx);
+        ctx.lastUtilSample = state.simTime;
+      }
+      return true;
+    }
+  }
+
+  // ── Bulk dispatch: score+sort ONCE, then
+  // dispatch all fitting jobs in one pass. ──
+  // This replaces the old loop that called
+  // runScheduler repeatedly (re-scoring the
+  // entire queue each time — O(D×N log N)).
+  desBulkDispatch(ctx);
+
+  // Sample utilization at intervals
+  if (
+    state.simTime - ctx.lastUtilSample >=
+    UTIL_SAMPLE_INTERVAL
+  ) {
+    sampleUtilization(ctx);
+    ctx.lastUtilSample = state.simTime;
+  }
+
+  return true;
+};
+
+/** Drain remaining active jobs after main loop */
+const drainRemaining = (ctx: DESContext) => {
+  const {
+    maxSimTime,
+    maxEvents,
+    state,
+    eq,
+    jobEvents,
+  } = ctx;
+  while (
+    eq.size > 0 &&
+    ctx.eventsProcessed < maxEvents
+  ) {
+    const event = eq.peek()!;
     if (event.time > maxSimTime) break;
-    eventsProcessed++;
+    eq.pop();
+    ctx.eventsProcessed++;
     state.simTime = event.time;
 
     if (event.type === 'JOB_COMPLETION') {
       const jobId = event.jobId!;
-      const runningIdx = state.active.findIndex(j => j.id === jobId);
-      if (runningIdx >= 0) {
-        const job = state.active[runningIdx];
-        state.active.splice(runningIdx, 1);
-
-        const poolType = getJobPoolType(job, config);
-        const orgPools = state.orgUsage[job.orgId];
-        if (orgPools?.[poolType]) {
-          const p = orgPools[poolType];
-          orgPools[poolType] = {
-            cpu: p.cpu - job.resources.cpu,
-            memory: p.memory - job.resources.memory,
-            gpu: p.gpu - job.resources.gpu,
-          };
-        }
-
-        const ev = jobEvents.get(jobId);
-        if (ev) ev.completedAt = state.simTime;
-
-        sampleUtilization();
+      const job = state.activeMap.get(jobId);
+      if (!job) continue;
+      state.activeMap.delete(jobId);
+      state.activeIds.delete(jobId);
+      const ri = state.active.indexOf(job);
+      if (ri >= 0) {
+        const last =
+          state.active[
+            state.active.length - 1
+          ];
+        state.active[ri] = last;
+        state.active.pop();
       }
+      const poolType = getJobPoolType(
+        job,
+        ctx.config,
+      );
+      const orgPools =
+        state.orgUsage[job.orgId];
+      if (orgPools?.[poolType]) {
+        const p = orgPools[poolType];
+        orgPools[poolType] = {
+          cpu: p.cpu - job.resources.cpu,
+          memory:
+            p.memory - job.resources.memory,
+          gpu: p.gpu - job.resources.gpu,
+        };
+      }
+      const fp = state.freeByPool[poolType];
+      if (fp) {
+        fp.cpu += job.resources.cpu;
+        fp.memory += job.resources.memory;
+        fp.gpu += job.resources.gpu;
+      }
+      const ev = jobEvents.get(jobId);
+      if (ev) ev.completedAt = state.simTime;
     } else if (event.type === 'TTL_EXPIRY') {
       const jobId = event.jobId!;
-      const queueIdx = state.queue.findIndex(j => j.id === jobId);
-      if (queueIdx >= 0) {
-        state.queue.splice(queueIdx, 1);
-        const ev = jobEvents.get(jobId);
-        if (ev) ev.evictedAt = state.simTime;
-        sampleUtilization();
+      const job = state.queueMap.get(jobId);
+      if (!job) continue;
+      const qi = state.queue.indexOf(job);
+      if (qi >= 0) {
+        const last =
+          state.queue[
+            state.queue.length - 1
+          ];
+        state.queue[qi] = last;
+        state.queue.pop();
       }
+      state.queueMap.delete(jobId);
+      const ev = jobEvents.get(jobId);
+      if (ev) ev.evictedAt = state.simTime;
+    }
+  }
+  // Final utilization sample
+  sampleUtilization(ctx);
+};
+
+const buildResult = (ctx: DESContext): DESResult => {
+  const allEvents = Array.from(
+    ctx.jobEvents.values(),
+  );
+  return {
+    events: allEvents,
+    utilSamples: ctx.utilSamples,
+    simDuration: ctx.state.simTime,
+    totalEventsProcessed: ctx.eventsProcessed,
+    completedCount: allEvents.filter(
+      (e) => e.completedAt !== null,
+    ).length,
+    evictedCount: allEvents.filter(
+      (e) => e.evictedAt !== null,
+    ).length,
+  };
+};
+
+// ── DES Engine (synchronous — for workers) ──────────────────────────────
+
+export const runDES = (
+  desConfig: DESConfig,
+): DESResult => {
+  const ctx = initContext(desConfig);
+
+  while (
+    ctx.eq.size > 0 &&
+    ctx.eventsProcessed < ctx.maxEvents
+  ) {
+    if (!processBatch(ctx)) break;
+  }
+
+  drainRemaining(ctx);
+  return buildResult(ctx);
+};
+
+// ── DES Engine (async — yields to keep UI responsive) ───────────────────
+
+/**
+ * Yield to the browser via MessageChannel.
+ * Unlike setTimeout, MessageChannel is NOT throttled
+ * in background tabs (browsers throttle setTimeout
+ * to ~1s in inactive tabs).
+ */
+const yieldToMain = (): Promise<void> =>
+  new Promise((resolve) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => resolve();
+    ch.port2.postMessage(null);
+  });
+
+/**
+ * Async DES that yields every `yieldEvery` events
+ * so the main-thread UI stays responsive.
+ * Produces the same results as `runDES`.
+ */
+export const runDESAsync = async (
+  desConfig: DESConfig,
+  /** Yield every N batches (default 500) */
+  yieldEvery = 500,
+  /** Optional abort signal */
+  signal?: AbortSignal,
+): Promise<DESResult> => {
+  const ctx = initContext(desConfig);
+  let sinceYield = 0;
+
+  while (
+    ctx.eq.size > 0 &&
+    ctx.eventsProcessed < ctx.maxEvents
+  ) {
+    if (signal?.aborted) {
+      throw new DOMException(
+        'DES run cancelled',
+        'AbortError',
+      );
+    }
+    if (!processBatch(ctx)) break;
+    sinceYield++;
+    if (sinceYield >= yieldEvery) {
+      sinceYield = 0;
+      await yieldToMain();
     }
   }
 
-  // ── Build results ───────────────────────────────────────────────────
-
-  const allEvents = Array.from(jobEvents.values());
-  const completedCount = allEvents.filter(e => e.completedAt !== null).length;
-  const evictedCount = allEvents.filter(e => e.evictedAt !== null).length;
-  return {
-    events: allEvents,
-    utilSamples,
-    simDuration: state.simTime,
-    totalEventsProcessed: eventsProcessed,
-    completedCount,
-    evictedCount,
-  };
+  drainRemaining(ctx);
+  return buildResult(ctx);
 };

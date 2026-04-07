@@ -207,7 +207,6 @@ const OverviewTable = ({ scenarios }: { scenarios: ScenarioResult[] }) => (
         <MetricRow label="P99 Wait Time" scenarios={scenarios} extract={a => fmtCITime(a.p99WaitTime)} getValue={a => a.p99WaitTime.mean} direction="lower-better" />
         <MetricRow label="Max Wait Time" scenarios={scenarios} extract={a => fmtCITime(a.maxWaitTime)} getValue={a => a.maxWaitTime.mean} direction="lower-better" />
         <MetricRow label="Jain's Fairness Index" scenarios={scenarios} extract={a => fmtCI(a.jainsIndex)} getValue={a => a.jainsIndex.mean} direction="higher-better" highlight />
-        <MetricRow label="Eviction Rate" scenarios={scenarios} extract={a => fmtCIPct(a.evictionRate)} getValue={a => a.evictionRate.mean} direction="lower-better" />
         <MetricRow label="Wait Time CoV" scenarios={scenarios} extract={a => fmtCI(a.coefficientOfVariation)} getValue={a => a.coefficientOfVariation.mean} direction="lower-better" />
       </Table.Tbody>
     </Table>
@@ -349,7 +348,7 @@ const ComparisonTable = ({ comparison: c }: { comparison: ScenarioComparison }) 
           <CompRow label="Mean Wait Time" test={c.meanWaitTime} winner={c.winners['meanWaitTime']} nameA={c.nameA} nameB={c.nameB} />
           <CompRow label="P95 Wait Time" test={c.p95WaitTime} winner={c.winners['p95WaitTime']} nameA={c.nameA} nameB={c.nameB} />
           <CompRow label="Jain's Fairness" test={c.jainsIndex} winner={c.winners['jainsIndex']} nameA={c.nameA} nameB={c.nameB} />
-          <CompRow label="Eviction Rate" test={c.evictionRate} winner={c.winners['evictionRate']} nameA={c.nameA} nameB={c.nameB} />
+
         </Table.Tbody>
       </Table>
     </Stack>

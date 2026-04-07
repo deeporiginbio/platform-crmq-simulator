@@ -53,7 +53,6 @@ const phaseBadge = (phase: number) => {
   const labels: Record<number, { label: string; color: string }> = {
     1: { label: 'Phase 1 — MVP', color: 'blue' },
     2: { label: 'Phase 2 — Advanced', color: 'indigo' },
-    3: { label: 'Phase 3 — Edge Cases', color: 'violet' },
     4: { label: 'Stress Tests', color: 'red' },
     5: { label: 'Realistic Workloads', color: 'teal' },
     6: { label: 'Adversarial', color: 'orange' },

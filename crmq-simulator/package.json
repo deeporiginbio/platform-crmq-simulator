@@ -11,9 +11,14 @@
   "dependencies": {
     "@mantine/core": "^8.3.5",
     "@mantine/hooks": "^8.3.5",
+    "@types/react-plotly.js": "^2.6.4",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.7",
     "next": "^14.2.0",
+    "plotly.js-dist-min": "^3.5.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-plotly.js": "^2.6.0",
     "recharts": "^3.8.1",
     "zod": "^3.23.0",
     "zustand": "^5.0.12"

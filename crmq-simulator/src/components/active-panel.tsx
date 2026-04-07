@@ -2,6 +2,7 @@
 
 'use client';
 
+import { memo } from 'react';
 import { Box, Group, ScrollArea, Stack, Text } from '@mantine/core';
 import type { RunningJob, CRMQConfig } from '@/lib/types';
 import { fmtTime } from '@/lib/scheduler';
@@ -14,7 +15,7 @@ interface ActivePanelProps {
   cfg: CRMQConfig;
 }
 
-export const ActivePanel = ({ jobs, simTime, cfg }: ActivePanelProps) => {
+export const ActivePanel = memo(({ jobs, simTime, cfg }: ActivePanelProps) => {
   return (
     <Box className={classes.card}>
       <Stack gap="sm">
@@ -62,4 +63,6 @@ export const ActivePanel = ({ jobs, simTime, cfg }: ActivePanelProps) => {
       </Stack>
     </Box>
   );
-};
+});
+
+ActivePanel.displayName = 'ActivePanel';

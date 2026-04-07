@@ -2,13 +2,15 @@
 
 'use client';
 
-import { Box, Button, Group, Menu, ScrollArea, Stack, Text } from '@mantine/core';
+import { memo, useMemo } from 'react';
+import { Box, Button, Group, Menu, Stack, Text } from '@mantine/core';
 import type { Job, Org, CRMQConfig, PredictionMap, Prediction } from '@/lib/types';
 import { calcScore, fmtTime } from '@/lib/scheduler';
 import { formatPrediction, getReasonLabel } from '@/lib/virtual-cluster';
 import { getJobPoolType, getPoolMeta } from '@/lib/types';
 import { normalizeFormulaType } from '@/lib/config/formulas/registry';
 import { SCENARIO_PRESETS } from '@/lib/benchmark/traffic';
+import { useVirtualScroll } from '@/hooks/use-virtual-scroll';
 import classes from './queue-panel.module.css';
 
 interface QueuePanelProps {
@@ -135,7 +137,7 @@ const computeBreakdown = (
   }
 };
 
-const QueueItem = ({ job, rank, isTarget, cfg, orgs, prediction }: QueueItemProps) => {
+const QueueItem = memo(({ job, rank, isTarget, cfg, orgs, prediction }: QueueItemProps) => {
   const org = orgs.find((o) => o.id === job.orgId);
   const formulaType = normalizeFormulaType(cfg.formulaType ?? 'current_weighted');
   const breakdown = computeBreakdown(formulaType, job, cfg, org);
@@ -215,12 +217,98 @@ const QueueItem = ({ job, rank, isTarget, cfg, orgs, prediction }: QueueItemProp
       </Stack>
     </Box>
   );
-};
+});
 
-export const QueuePanel = ({ queue, simTime, reservTarget, cfg, orgs, predictions, onAdd, onLoadScenario }: QueuePanelProps) => {
-  const scored = [...queue]
-    .map((j) => ({ ...j, score: calcScore(j, simTime, cfg, orgs), wait: Math.max(0, simTime - j.enqueuedAt) }))
-    .sort((a, b) => b.score - a.score);
+QueueItem.displayName = 'QueueItem';
+
+/** Estimated height of each QueueItem in px */
+const QUEUE_ITEM_HEIGHT = 130;
+/** Height of the scrollable container in px */
+const QUEUE_CONTAINER_HEIGHT = 480;
+
+type ScoredJob = Job & { score: number; wait: number };
+
+interface VirtualQueueListProps {
+  scored: ScoredJob[];
+  reservTarget: string | null;
+  cfg: CRMQConfig;
+  orgs: Org[];
+  predictions: PredictionMap;
+}
+
+const VirtualQueueList = memo(
+  ({
+    scored,
+    reservTarget,
+    cfg,
+    orgs,
+    predictions,
+  }: VirtualQueueListProps) => {
+    const {
+      containerRef,
+      visibleItems,
+      startIndex,
+      topPad,
+      bottomPad,
+      onScroll,
+    } = useVirtualScroll(
+      scored,
+      QUEUE_ITEM_HEIGHT,
+      QUEUE_CONTAINER_HEIGHT,
+    );
+
+    if (scored.length === 0) return null;
+
+    return (
+      <div
+        ref={containerRef}
+        onScroll={onScroll}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          maxHeight: QUEUE_CONTAINER_HEIGHT,
+        }}
+      >
+        <div style={{ paddingTop: topPad }}>
+          <Stack gap={8}>
+            {visibleItems.map((job, i) => (
+              <QueueItem
+                key={job.id}
+                job={job}
+                rank={startIndex + i + 1}
+                isTarget={
+                  job.id === reservTarget
+                }
+                cfg={cfg}
+                orgs={orgs}
+                prediction={
+                  predictions[job.id]
+                }
+              />
+            ))}
+          </Stack>
+        </div>
+        <div style={{ height: bottomPad }} />
+      </div>
+    );
+  },
+);
+
+VirtualQueueList.displayName =
+  'VirtualQueueList';
+
+export const QueuePanel = memo(({ queue, simTime, reservTarget, cfg, orgs, predictions, onAdd, onLoadScenario }: QueuePanelProps) => {
+  const scored = useMemo(
+    () => [...queue]
+      .map((j) => ({
+        ...j,
+        score: calcScore(j, simTime, cfg, orgs),
+        wait: Math.max(0, simTime - j.enqueuedAt),
+      }))
+      .sort((a, b) => b.score - a.score),
+    [queue, simTime, cfg, orgs],
+  );
 
   return (
     <Box className={classes.card}>
@@ -236,30 +324,39 @@ export const QueuePanel = ({ queue, simTime, reservTarget, cfg, orgs, prediction
                 📦 Load Scenario
               </Button>
             </Menu.Target>
-            <Menu.Dropdown>
-              <Menu.Label>Phase 1 — MVP</Menu.Label>
-              {SCENARIO_PRESETS.filter(s => s.phase === 1).map(s => (
-                <Menu.Item key={s.id} onClick={() => onLoadScenario(s.id)}>
-                  <Text size="xs" fw={600}>{s.name}</Text>
-                  <Text size="xs" c="dimmed">{s.description}</Text>
-                </Menu.Item>
-              ))}
-              <Menu.Divider />
-              <Menu.Label>Phase 2 — Advanced</Menu.Label>
-              {SCENARIO_PRESETS.filter(s => s.phase === 2).map(s => (
-                <Menu.Item key={s.id} onClick={() => onLoadScenario(s.id)}>
-                  <Text size="xs" fw={600}>{s.name}</Text>
-                  <Text size="xs" c="dimmed">{s.description}</Text>
-                </Menu.Item>
-              ))}
-              <Menu.Divider />
-              <Menu.Label>Phase 3 — Edge Cases</Menu.Label>
-              {SCENARIO_PRESETS.filter(s => s.phase === 3).map(s => (
-                <Menu.Item key={s.id} onClick={() => onLoadScenario(s.id)}>
-                  <Text size="xs" fw={600}>{s.name}</Text>
-                  <Text size="xs" c="dimmed">{s.description}</Text>
-                </Menu.Item>
-              ))}
+            <Menu.Dropdown style={{ maxHeight: 400, overflowY: 'auto' }}>
+              {[
+                { phase: 1, label: 'Core' },
+                { phase: 2, label: 'Advanced' },
+                { phase: 4, label: 'Stress' },
+                { phase: 5, label: 'Realistic' },
+                { phase: 6, label: 'Adversarial' },
+              ].flatMap(({ phase, label }, i) => {
+                const items = SCENARIO_PRESETS
+                  .filter(s => s.phase === phase);
+                if (!items.length) return [];
+                return [
+                  ...(i > 0
+                    ? [<Menu.Divider key={`d${phase}`} />]
+                    : []),
+                  <Menu.Label key={`l${phase}`}>
+                    {label}
+                  </Menu.Label>,
+                  ...items.map(s => (
+                    <Menu.Item
+                      key={s.id}
+                      onClick={() => onLoadScenario(s.id)}
+                    >
+                      <Text size="xs" fw={600}>
+                        {s.name}
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        {s.description}
+                      </Text>
+                    </Menu.Item>
+                  )),
+                ];
+              })}
             </Menu.Dropdown>
           </Menu>
           <Button variant="filled" color="indigo" size="compact-xs" onClick={onAdd}>
@@ -275,22 +372,16 @@ export const QueuePanel = ({ queue, simTime, reservTarget, cfg, orgs, prediction
         </div>
       )}
 
-      <ScrollArea style={{ flex: 1, minHeight: 0 }}>
-        <Stack gap={8}>
-          {scored.map((job, i) => (
-            <QueueItem
-              key={job.id}
-              job={job}
-              rank={i + 1}
-              isTarget={job.id === reservTarget}
-              cfg={cfg}
-              orgs={orgs}
-              prediction={predictions[job.id]}
-            />
-          ))}
-        </Stack>
-      </ScrollArea>
+      <VirtualQueueList
+        scored={scored}
+        reservTarget={reservTarget}
+        cfg={cfg}
+        orgs={orgs}
+        predictions={predictions}
+      />
 
     </Box>
   );
-};
+});
+
+QueuePanel.displayName = 'QueuePanel';

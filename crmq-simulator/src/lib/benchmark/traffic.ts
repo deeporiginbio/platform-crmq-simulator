@@ -450,29 +450,34 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
       seed: 456,
     },
   },
-  {
-    id: 'priority-inversion',
-    name: 'Priority Inversion',
-    description: '150 jobs burst — tests whether aging rescues low-priority starved jobs',
-    phase: 1,
-    workloadConfig: {
-      durationSeconds: 1800,
-      arrivalPattern: { type: 'burst', count: 150, atTime: 0 },
-      sizeDistribution: { type: 'uniform', cpuRange: [8, 32], memoryRange: [32, 128], gpuRange: [0, 0], durationRange: [120, 300] },
-      seed: 789,
-    },
-  },
 
   // Phase 2 — Advanced
   {
     id: 'multi-tenant-competition',
     name: 'Multi-Tenant Competition',
-    description: '30 jobs/min across 3 orgs — tests org-level fairness under heavy load',
+    description: 'Asymmetric 3-org contention: deeporigin (few large), org-beta (many small), org-gamma (medium) — all push quotas, tests org-level fairness',
     phase: 2,
     workloadConfig: {
       durationSeconds: 1800,
-      arrivalPattern: { type: 'poisson', lambdaPerMinute: 30 },
-      sizeDistribution: { type: 'mixed', small: 70, medium: 20, large: 10 },
+      arrivalPattern: {
+        type: 'periodic_mix',
+        templates: [
+          // deeporigin: large 64-CPU jobs every 30s (2/min)
+          // 180s / 30s = 6 concurrent × 64 = 384 CPU (~28% of quota)
+          // High priority org (3) with high-value jobs
+          { name: 'DO-large-64cpu',     orgId: 'deeporigin', cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 180, intervalSeconds: 30,  userPriority: 4, toolPriority: 4 },
+          // org-beta: small 4-CPU jobs every 2s (30/min)
+          // 120s / 2s = 60 concurrent × 4 = 240 CPU (within 384 quota)
+          // Floods queue with volume, low priority org (2)
+          { name: 'Beta-small-4cpu',    orgId: 'org-beta',   cpu: 4,   memory: 16,   gpu: 0, durationSeconds: 120, intervalSeconds: 2,   userPriority: 2, toolPriority: 2 },
+          // org-gamma: medium 32-CPU jobs every 10s (6/min)
+          // 300s / 10s = 30 concurrent × 32 = 960 CPU demand,
+          // but quota caps at 12 concurrent (384 CPU)
+          // Lowest priority org (1), creates real quota contention
+          { name: 'Gamma-med-32cpu',    orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 300, intervalSeconds: 10,  userPriority: 3, toolPriority: 3 },
+        ],
+      },
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 1001,
     },
   },
@@ -500,77 +505,42 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
       seed: 3003,
     },
   },
-  {
-    id: 'ramp-up-down',
-    name: 'Ramp-Up / Ramp-Down',
-    description: 'MMPP: quiet (5/min) → busy (30/min) → peak (60/min) cycling',
-    phase: 2,
-    workloadConfig: {
-      durationSeconds: 3600,
-      arrivalPattern: {
-        type: 'mmpp',
-        states: [
-          { label: 'quiet', lambdaPerMinute: 5, weight: 0.3 },
-          { label: 'busy', lambdaPerMinute: 30, weight: 0.5 },
-          { label: 'peak', lambdaPerMinute: 60, weight: 0.2 },
-        ],
-        transitionInterval: 600,
-      },
-      sizeDistribution: { type: 'uniform', cpuRange: [8, 32], memoryRange: [32, 128], gpuRange: [0, 0], durationRange: [60, 180] },
-      seed: 4004,
-    },
-  },
 
-  // Phase 3 — Edge Cases
-  {
-    id: 'heavy-tailed',
-    name: 'Heavy-Tailed (Pareto)',
-    description: 'Pareto sizes (alpha=1.5) at 15 jobs/min — extreme variance, long transients',
-    phase: 3,
-    workloadConfig: {
-      durationSeconds: 3600,
-      arrivalPattern: { type: 'poisson', lambdaPerMinute: 15 },
-      sizeDistribution: { type: 'pareto', alpha: 1.5, cpuMin: 8, memoryMin: 32, gpuMin: 0, durationMin: 60 },
-      seed: 5005,
-    },
-  },
-  {
-    id: 'zero-headroom',
-    name: 'Zero Headroom',
-    description: '300 massive jobs burst — overwhelms cluster, tests TTL eviction under pressure',
-    phase: 3,
-    workloadConfig: {
-      durationSeconds: 1800,
-      arrivalPattern: { type: 'burst', count: 300, atTime: 0 },
-      sizeDistribution: { type: 'uniform', cpuRange: [32, 128], memoryRange: [128, 512], gpuRange: [0, 4], durationRange: [600, 1800] },
-      seed: 6006,
-    },
-  },
-
-  // Phase 3 — Full 24h Simulation (from CRMQ Full Simulation Report)
   {
     id: 'full-24h-simulation',
     name: '24h Full Simulation',
-    description: '24h deterministic mix: 6 job types across 3 orgs (~1695 jobs) — production-grade benchmark',
-    phase: 3,
+    description: '24h deterministic mix: 3 orgs each submit medium-large jobs at ~105% cluster capacity — formula decides cross-org priority under sustained overload',
+    phase: 2,
     workloadConfig: {
       durationSeconds: 86400,
       arrivalPattern: {
         type: 'periodic_mix',
         templates: [
-          // Primary workloads (every 5 min)
-          // NOTE: orgIds must match the orgs from DEFAULT_ORGS (deeporigin, org-beta, org-gamma)
-          // so that org quotas, priority lookups, and orgUsage tracking work correctly.
-          { name: 'TypeA-192cpu-6hr',  orgId: 'deeporigin', cpu: 192, memory: 768, gpu: 0, durationSeconds: 21600, intervalSeconds: 300, userPriority: 3, toolPriority: 2 },
-          { name: 'TypeB-4cpu-20min',  orgId: 'org-beta',   cpu: 4,   memory: 16,  gpu: 0, durationSeconds: 1200,  intervalSeconds: 300, userPriority: 2, toolPriority: 3 },
-          { name: 'TypeC-16cpu-1hr',   orgId: 'org-gamma',  cpu: 16,  memory: 64,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 300, userPriority: 3, toolPriority: 4 },
-          // Background workloads (varying intervals)
-          { name: 'BG-deeporigin-8cpu', orgId: 'deeporigin', cpu: 8,   memory: 32,  gpu: 0, durationSeconds: 2700,  intervalSeconds: 600, userPriority: 2, toolPriority: 2 },
-          { name: 'BG-beta-2cpu',       orgId: 'org-beta',   cpu: 2,   memory: 8,   gpu: 0, durationSeconds: 600,   intervalSeconds: 180, userPriority: 1, toolPriority: 1 },
-          { name: 'BG-gamma-4cpu',      orgId: 'org-gamma',  cpu: 4,   memory: 16,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 420, userPriority: 2, toolPriority: 3 },
+          // NOTE: orgIds must match DEFAULT_ORGS (deeporigin, org-beta, org-gamma).
+          //
+          // Each org submits medium-large jobs that collectively exceed pool capacity.
+          // The formula must decide cross-org priority when not all jobs can run.
+          //
+          // deeporigin: 96 CPU, 4h, every 45min = 5.3 concurrent × 96 = 512 CPU
+          { name: 'DO-large-96cpu',     orgId: 'deeporigin', cpu: 96,  memory: 384, gpu: 0, durationSeconds: 14400, intervalSeconds: 2700, userPriority: 3, toolPriority: 4 },
+          // org-beta: 48 CPU, 2h, every 15min = 8 concurrent × 48 = 384 CPU (= quota)
+          { name: 'Beta-med-48cpu',     orgId: 'org-beta',   cpu: 48,  memory: 192, gpu: 0, durationSeconds: 7200,  intervalSeconds: 900,  userPriority: 2, toolPriority: 3 },
+          // org-gamma: 64 CPU, 3h, every 20min = 9 concurrent × 64 = 576 demand,
+          // quota caps at 384 (6 running, 3 queued)
+          { name: 'Gamma-med-64cpu',    orgId: 'org-gamma',  cpu: 64,  memory: 256, gpu: 0, durationSeconds: 10800, intervalSeconds: 1200, userPriority: 3, toolPriority: 3 },
+          // Background small jobs to fill gaps
+          // DO: 2700/300 = 9 × 8 = 72 CPU
+          { name: 'BG-deeporigin-8cpu', orgId: 'deeporigin', cpu: 8,   memory: 32,  gpu: 0, durationSeconds: 2700,  intervalSeconds: 300,  userPriority: 2, toolPriority: 2 },
+          // Beta: 600/120 = 5 × 4 = 20 CPU
+          { name: 'BG-beta-4cpu',       orgId: 'org-beta',   cpu: 4,   memory: 16,  gpu: 0, durationSeconds: 600,   intervalSeconds: 120,  userPriority: 1, toolPriority: 1 },
+          // Gamma: 1800/300 = 6 × 8 = 48 CPU
+          { name: 'BG-gamma-8cpu',      orgId: 'org-gamma',  cpu: 8,   memory: 32,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 300,  userPriority: 2, toolPriority: 2 },
         ],
+        // Total running: DO 584 + beta min(404,384) + gamma min(624,384) = ~1,352
+        // Plus bg: 72 + 20 + 48 = 140. Effective ~1,352+ (pool = 1,362).
+        // Both beta and gamma hit quota walls → formula decides who gets scarce slots.
       },
-      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 }, // unused for periodic_mix
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 7007,
     },
   },
@@ -580,20 +550,31 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
   {
     id: 'queue-flood',
     name: 'S1: Queue Flood',
-    description: 'Low-priority job avalanche: org-beta floods ~2,000 tiny jobs while deeporigin submits 20 critical large jobs — tests priority isolation under queue pressure',
+    description: 'org-beta floods 2,880 jobs (8 CPU, 30min) saturating its 384-CPU quota while deeporigin + org-gamma compete for remaining capacity — tests priority isolation under queue + resource pressure',
     phase: 4,
     workloadConfig: {
       durationSeconds: 86400,
       arrivalPattern: {
         type: 'periodic_mix',
         templates: [
-          // org-beta flood: 2,009 tiny jobs (2 CPU, 5m each) over 24h
-          { name: 'Flood-tiny-2cpu',    orgId: 'org-beta',   cpu: 2,   memory: 8,    gpu: 0, durationSeconds: 300,   intervalSeconds: 43,   userPriority: 1, toolPriority: 1 },
-          // deeporigin critical: 20 large jobs (128 CPU, 2h each) every 72m
-          { name: 'Critical-128cpu',    orgId: 'deeporigin', cpu: 128, memory: 512,  gpu: 0, durationSeconds: 7200,  intervalSeconds: 4320, userPriority: 5, toolPriority: 5 },
-          // org-gamma normal: 240 medium jobs (16 CPU, 1h each) every 6m
-          { name: 'Normal-16cpu',       orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 3600,  intervalSeconds: 360,  userPriority: 3, toolPriority: 3 },
+          // org-beta flood: 8 CPU jobs every 30s = 2,880/day
+          // 1800s/30s = 60 concurrent × 8 = 480 CPU demand,
+          // quota caps at 384 (48 running, 12 always queued)
+          { name: 'Flood-8cpu',         orgId: 'org-beta',   cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 30,   userPriority: 1, toolPriority: 1 },
+          // deeporigin critical: 128 CPU, 2h, every 1h = 24/day
+          // 7200s/3600s = 2 concurrent × 128 = 256 CPU
+          { name: 'Critical-128cpu',    orgId: 'deeporigin', cpu: 128, memory: 512,  gpu: 0, durationSeconds: 7200,  intervalSeconds: 3600, userPriority: 5, toolPriority: 5 },
+          // deeporigin background: 32 CPU, 1h, every 5min
+          // 3600s/300s = 12 concurrent × 32 = 384 CPU
+          { name: 'DO-background-32cpu', orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 300,  userPriority: 3, toolPriority: 3 },
+          // org-gamma normal: 32 CPU, 1h, every 4min
+          // 3600s/240s = 15 concurrent × 32 = 480 demand,
+          // quota caps at 384 (12 running, 3 queued)
+          { name: 'Normal-32cpu',       orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 240,  userPriority: 3, toolPriority: 3 },
         ],
+        // Total running: beta 384 + DO 640 + gamma 384 = 1,408 > 1,362
+        // All 3 orgs hit quota walls + pool capacity contested.
+        // org-gamma is the "collateral damage" indicator.
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 8001,
@@ -602,22 +583,30 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
   {
     id: 'whale-blockade',
     name: 'S2: Whale Blockade',
-    description: 'Single 768-CPU whale job (56% of cluster) blocks capacity — tests reservation mode activation and backfill effectiveness around a massive job',
+    description: '768-CPU whale arrives every 5h into ~750 CPU of background load — whale can\'t fit, must trigger reservation mode while small jobs backfill around it',
     phase: 4,
     workloadConfig: {
       durationSeconds: 86400,
       arrivalPattern: {
         type: 'periodic_mix',
         templates: [
-          // The whale: 1 massive job (768 CPU = 56% of mason pool, 8h)
-          { name: 'WHALE-768cpu',       orgId: 'deeporigin', cpu: 768, memory: 3072, gpu: 0, durationSeconds: 28800, intervalSeconds: 86400, userPriority: 5, toolPriority: 5 },
-          // Background small jobs from org-beta (every 4m)
-          { name: 'BG-beta-8cpu',       orgId: 'org-beta',   cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1200,  intervalSeconds: 240,  userPriority: 2, toolPriority: 2 },
-          // Background small jobs from org-gamma (every 4m)
-          { name: 'BG-gamma-12cpu',     orgId: 'org-gamma',  cpu: 12,  memory: 48,   gpu: 0, durationSeconds: 900,   intervalSeconds: 240,  userPriority: 2, toolPriority: 3 },
-          // A few medium deeporigin jobs to keep org-load pressure
-          { name: 'Medium-DO-32cpu',    orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 1800, userPriority: 3, toolPriority: 3 },
+          // The whale: 768 CPU (56% of mason pool), 4h, every 5h
+          // Non-overlapping (dur < interval), but arrives into saturated cluster.
+          // DO quota: 96 (medium) + 768 = 864 < 1,364. Quota OK.
+          // Pool: 750 (bg) + 768 = 1,518 > 1,360. Gate 2 blocks.
+          { name: 'WHALE-768cpu',       orgId: 'deeporigin', cpu: 768, memory: 3072, gpu: 0, durationSeconds: 14400, intervalSeconds: 18000, userPriority: 5, toolPriority: 5 },
+          // deeporigin medium: 16 CPU, 1h, every 10min = 6 × 16 = 96 CPU
+          { name: 'Medium-DO-16cpu',    orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 3600,  intervalSeconds: 600,  userPriority: 3, toolPriority: 3 },
+          // org-beta: 16 CPU every 45s, 20min dur = 26.7 concurrent × 16
+          // = 427 demand, quota caps at 384 (24 running)
+          { name: 'BG-beta-16cpu',      orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1200,  intervalSeconds: 45,   userPriority: 2, toolPriority: 2 },
+          // org-gamma: 16 CPU every 50s, 15min dur = 18 concurrent × 16
+          // = 288 CPU (within 384 quota)
+          { name: 'BG-gamma-16cpu',     orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 900,   intervalSeconds: 50,   userPriority: 2, toolPriority: 3 },
         ],
+        // Background steady-state: 96 + 384 + 288 = 768 CPU (~56% util)
+        // Whale needs 768 more → 1,536 > 1,360. Must wait ~20-40 min
+        // for enough bg jobs to complete during reservation mode.
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 8002,
@@ -646,15 +635,50 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     },
   },
   {
-    id: 'cascading-failure',
-    name: 'S4: Cascading Failure Recovery',
-    description: 'Sustained Pareto load at 25 jobs/hr — tests queue recovery dynamics under heavy-tailed job sizes (note: actual mid-sim failure events require engine extension)',
+    id: 'sustained-pareto-stress',
+    name: 'S4: Sustained Pareto Stress',
+    description: 'Heavy Pareto load (α=1.5) at 18 jobs/min over 24h — near-capacity baseline where Pareto tail spikes create transient overload and queue recovery cycles',
     phase: 4,
     workloadConfig: {
       durationSeconds: 86400,
-      arrivalPattern: { type: 'poisson', lambdaPerMinute: 0.42 },
+      // 18 jobs/min with avg ~24 CPU (Pareto mean for α=1.5, xMin=8)
+      // avg duration ~180s → ~54 concurrent × 24 CPU ≈ 1,296 CPU (~95% util)
+      // Pareto tail produces 128-CPU outliers that tip into overload,
+      // triggering reservation mode. Between spikes, queue drains via backfill.
+      // Safe: queue oscillates rather than growing monotonically.
+      arrivalPattern: { type: 'poisson', lambdaPerMinute: 18 },
       sizeDistribution: { type: 'pareto', alpha: 1.5, cpuMin: 8, memoryMin: 32, gpuMin: 0, durationMin: 60 },
       seed: 8004,
+    },
+  },
+
+  {
+    id: 'cascading-failure',
+    name: 'S5: Cascading Failure Recovery',
+    description: 'MMPP simulates failure-recovery cycles: normal (1/min) → failure-burst (4/min, resubmitted jobs) → degraded (0.2/min) every 30 min over 24h — tests scheduler resilience to sudden load spikes',
+    phase: 4,
+    workloadConfig: {
+      durationSeconds: 86400,
+      arrivalPattern: {
+        type: 'mmpp',
+        states: [
+          // Max throughput ≈ 1.48 jobs/min for this heavier mix.
+          // Normal operation: 1/min ≈ 67% utilisation
+          { label: 'normal', lambdaPerMinute: 1, weight: 0.45 },
+          // Failure-recovery burst: 4/min ≈ 270% util — massive
+          // spike simulates resubmitted jobs after nodes crash.
+          // Queue builds fast but drains during degraded phase.
+          { label: 'failure-burst', lambdaPerMinute: 4, weight: 0.20 },
+          // Degraded: 0.2/min ≈ 13% util — cluster partially
+          // recovered, reduced submission rate. Queue drains.
+          { label: 'degraded', lambdaPerMinute: 0.2, weight: 0.35 },
+        ],
+        transitionInterval: 1800,
+      },
+      sizeDistribution: {
+        type: 'mixed', small: 60, medium: 25, large: 15,
+      },
+      seed: 8005,
     },
   },
 
@@ -663,16 +687,21 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
   {
     id: 'monday-morning-rush',
     name: 'R1: Monday Morning Rush',
-    description: 'Diurnal MMPP: night (5/hr) → day (35/hr) → peak (70/hr) cycling over 48h — tests scheduling under realistic day/night load patterns',
+    description: 'Diurnal MMPP: night (0.5/min) → day (1.5/min) → peak (3/min) cycling over 48h — tests scheduling under realistic day/night load patterns',
     phase: 5,
     workloadConfig: {
       durationSeconds: 172800,
       arrivalPattern: {
         type: 'mmpp',
         states: [
-          { label: 'night',  lambdaPerMinute: 0.083, weight: 0.38 },
-          { label: 'day',    lambdaPerMinute: 0.583, weight: 0.42 },
-          { label: 'peak',   lambdaPerMinute: 1.167, weight: 0.20 },
+          // Max throughput ≈ 2.1 jobs/min for this mixed distribution.
+          // Night: 0.5/min ≈ 25% utilisation — queue drains
+          { label: 'night',  lambdaPerMinute: 0.5, weight: 0.38 },
+          // Day: 1.5/min ≈ 70% util — steady load, slight queuing
+          { label: 'day',    lambdaPerMinute: 1.5, weight: 0.42 },
+          // Peak: 3/min ≈ 140% util — queue builds but safely
+          // drains during subsequent night phases
+          { label: 'peak',   lambdaPerMinute: 3,   weight: 0.20 },
         ],
         transitionInterval: 3600,
       },
@@ -703,31 +732,94 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     },
   },
   {
-    id: 'workflow-chains',
-    name: 'R3: Workflow Chains',
-    description: 'Multi-step pipelines (MolProps, Docking, Analysis) at 5 workflows/hr — models sequential job patterns (note: true step dependencies require engine extension)',
+    id: 'mixed-multi-org',
+    name: 'R3: Mixed Multi-Org Workload',
+    description: 'Diverse job types across 3 orgs at ~100% cluster utilization — org-beta and org-gamma hit quota walls, tests cross-pool scheduling and fairness under real contention',
     phase: 5,
     workloadConfig: {
       durationSeconds: 86400,
       arrivalPattern: {
         type: 'periodic_mix',
         templates: [
-          // MolProps pipeline (3 steps, deeporigin) — 5/hr each = every 720s
-          { name: 'MolProps-prep-8cpu',   orgId: 'deeporigin', cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 900,   intervalSeconds: 720, userPriority: 3, toolPriority: 3 },
-          { name: 'MolProps-main-32cpu',  orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 720, userPriority: 3, toolPriority: 4 },
-          { name: 'MolProps-gpu-8gpu',    orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720, userPriority: 3, toolPriority: 5 },
-          // Docking pipeline (2 main steps, org-beta)
-          { name: 'Docking-prep-16cpu',   orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 720, userPriority: 2, toolPriority: 3 },
-          { name: 'Docking-main-64cpu',   orgId: 'org-beta',   cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 14400, intervalSeconds: 720, userPriority: 2, toolPriority: 4 },
-          // Analysis pipeline (org-gamma)
-          { name: 'Analysis-16cpu',       orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 720, userPriority: 2, toolPriority: 2 },
-          // Background standalone jobs
-          { name: 'BG-standalone-cpu',    orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 180, userPriority: 1, toolPriority: 1 },
+          // deeporigin: prep + compute + GPU (CPU pool ~350 CPU)
+          // 900/300 = 3 × 8 = 24 CPU
+          { name: 'DO-prep-8cpu',         orgId: 'deeporigin', cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 900,   intervalSeconds: 300, userPriority: 3, toolPriority: 3 },
+          // 3600/360 = 10 × 32 = 320 CPU
+          { name: 'DO-compute-32cpu',     orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360, userPriority: 3, toolPriority: 4 },
+          // GPU pool: 7200/720 = 10 × (16 CPU, 8 GPU)
+          { name: 'DO-gpu-8gpu',          orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720, userPriority: 3, toolPriority: 5 },
+          // org-beta: prep + compute (CPU pool)
+          // 1800/300 = 6 × 16 = 96 CPU
+          { name: 'Beta-prep-16cpu',      orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 300, userPriority: 2, toolPriority: 3 },
+          // 3600/360 = 10 × 64 = 640 demand, quota caps at 384
+          // (6 running, 4 queued per cycle)
+          { name: 'Beta-compute-64cpu',   orgId: 'org-beta',   cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360, userPriority: 2, toolPriority: 4 },
+          // org-gamma: analysis + compute + background
+          // 1800/240 = 7.5 × 16 = 120 CPU
+          { name: 'Gamma-analysis-16cpu', orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 240, userPriority: 2, toolPriority: 2 },
+          // 3600/480 = 7.5 × 32 = 240 CPU demand → gamma total 360 (within 384)
+          { name: 'Gamma-compute-32cpu',  orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 480, userPriority: 2, toolPriority: 3 },
+          // 1800/120 = 15 × 8 = 120 CPU → gamma total 480, quota caps at 384
+          { name: 'BG-standalone-cpu',    orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 120, userPriority: 1, toolPriority: 1 },
+          // GPU pool: org-beta GPU jobs
           { name: 'BG-standalone-gpu',    orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 4, durationSeconds: 3600,  intervalSeconds: 720, userPriority: 2, toolPriority: 2 },
         ],
+        // CPU pool: DO 344 + beta min(480,384) + gamma min(480,384) = ~1,112
+        // With beta & gamma queuing, effective ~1,112 running + queued pressure.
+        // GPU pool: DO 160 CPU + beta 80 CPU = 240 CPU, 80+20 = 100 GPU
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 9003,
+    },
+  },
+
+  {
+    id: 'workflow-chains',
+    name: 'R4: Workflow Chains',
+    description: 'Three concurrent pipelines (prep→compute→GPU) at ~95% cluster util — org-beta hits quota wall on 64-CPU docking jobs, tests cross-pool and cross-pipeline fairness',
+    phase: 5,
+    workloadConfig: {
+      durationSeconds: 86400,
+      arrivalPattern: {
+        type: 'periodic_mix',
+        templates: [
+          // ── MolProps pipeline (deeporigin) ──
+          // Stage 1: Prep — every 3 min (20/hr)
+          // 900/180 = 5 × 8 = 40 CPU
+          { name: 'MolProps-prep-8cpu',    orgId: 'deeporigin', cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 900,   intervalSeconds: 180,  userPriority: 3, toolPriority: 3 },
+          // Stage 2: Compute — every 6 min (10/hr)
+          // 3600/360 = 10 × 32 = 320 CPU
+          { name: 'MolProps-main-32cpu',   orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360,  userPriority: 3, toolPriority: 4 },
+          // Stage 3: GPU finish — every 12 min (5/hr)
+          // 7200/720 = 10 × (16 CPU, 8 GPU) = 160 CPU, 80 GPU
+          { name: 'MolProps-gpu-8gpu',     orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720,  userPriority: 3, toolPriority: 5 },
+
+          // ── Docking pipeline (org-beta) ──
+          // Stage 1: Prep — every 3 min
+          // 1200/180 = 6.7 × 16 = 107 CPU
+          { name: 'Docking-prep-16cpu',    orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1200,  intervalSeconds: 180,  userPriority: 2, toolPriority: 3 },
+          // Stage 2: Main — every 8 min
+          // 3600/480 = 7.5 × 64 = 480 demand, quota caps at 384
+          { name: 'Docking-main-64cpu',    orgId: 'org-beta',   cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 480,  userPriority: 2, toolPriority: 4 },
+
+          // ── Analysis pipeline (org-gamma) ──
+          // Stage 1: Prep — every 3 min
+          // 600/180 = 3.3 × 8 = 27 CPU
+          { name: 'Analysis-prep-8cpu',    orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 600,   intervalSeconds: 180,  userPriority: 2, toolPriority: 2 },
+          // Stage 2: Main — every 6 min
+          // 1800/360 = 5 × 32 = 160 CPU
+          { name: 'Analysis-main-32cpu',   orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 360,  userPriority: 2, toolPriority: 3 },
+
+          // Background standalone jobs (org-gamma)
+          // 1800/120 = 15 × 8 = 120 CPU → gamma total ~307, within 384
+          { name: 'BG-standalone-cpu',     orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 120,  userPriority: 1, toolPriority: 1 },
+        ],
+        // CPU pool: DO 360 + beta min(491,384) + gamma 307 = ~1,051 running
+        // Plus queued beta compute jobs creating scoring contention.
+        // GPU pool: DO 160 CPU, 80 GPU → moderate GPU pressure.
+      },
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
+      seed: 9004,
     },
   },
 
@@ -736,55 +828,99 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
   {
     id: 'job-splitting-attack',
     name: 'A1: Job Splitting Attack',
-    description: 'Equal CPU-hrs: deeporigin submits 10 × 128-CPU jobs, org-beta splits into 320 × 4-CPU jobs (both 5,120 CPU-hrs) — tests whether splitting games the formula',
+    description:
+      'Background load fills ~47% of cluster, then deeporigin '
+      + 'submits 128-CPU jobs every 20 min while org-beta '
+      + 'submits 4-CPU jobs every 38 s (~760 CPU-hrs/hr each)'
+      + ' — tests whether splitting games the formula',
     phase: 6,
     workloadConfig: {
       durationSeconds: 43200,
       arrivalPattern: {
         type: 'periodic_mix',
         templates: [
-          // deeporigin honest: 10 large jobs (128 CPU, 4h each) every 72m
-          { name: 'Honest-128cpu',      orgId: 'deeporigin', cpu: 128, memory: 512,  gpu: 0, durationSeconds: 14400, intervalSeconds: 4320, userPriority: 3, toolPriority: 3 },
-          // org-beta split: 320 small jobs (4 CPU, 4h each) every ~135s
-          { name: 'Split-4cpu',         orgId: 'org-beta',   cpu: 4,   memory: 16,   gpu: 0, durationSeconds: 14400, intervalSeconds: 135,  userPriority: 3, toolPriority: 3 },
+          // Background: deeporigin steady load fills ~640 CPU
+          // 3600s / 180s = 20 concurrent × 32 CPU = 640 CPU
+          {
+            name: 'DO-background',
+            orgId: 'deeporigin',
+            cpu: 32,
+            memory: 128,
+            gpu: 0,
+            durationSeconds: 3600,
+            intervalSeconds: 180,
+            userPriority: 3,
+            toolPriority: 3,
+          },
+          // deeporigin honest: 128 CPU, 2h, every 20 min
+          // 7200s / 1200s = 6 concurrent × 128 = 768 CPU
+          // DO total: 640 + 768 = 1,408 > 1,364 quota → queuing
+          {
+            name: 'Honest-128cpu',
+            orgId: 'deeporigin',
+            cpu: 128,
+            memory: 512,
+            gpu: 0,
+            durationSeconds: 7200,
+            intervalSeconds: 1200,
+            userPriority: 3,
+            toolPriority: 3,
+          },
+          // org-beta splitter: 4 CPU, 2h, every 38 s
+          // 7200s / 38s ≈ 189 concurrent × 4 = 756 CPU, but
+          // quota caps at 384 CPU (96 concurrent)
+          // ~760 CPU-hrs/hr ≈ deeporigin's ~768 CPU-hrs/hr
+          {
+            name: 'Split-4cpu',
+            orgId: 'org-beta',
+            cpu: 4,
+            memory: 16,
+            gpu: 0,
+            durationSeconds: 7200,
+            intervalSeconds: 38,
+            userPriority: 3,
+            toolPriority: 3,
+          },
         ],
       },
-      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
+      sizeDistribution: {
+        type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0,
+      },
       seed: 10001,
     },
   },
   {
     id: 'priority-inversion-stress',
     name: 'A2: Priority Inversion Stress',
-    description: 'org-gamma fills cluster to 90%, then deeporigin submits 5 critical 256-CPU jobs while org-beta keeps filling gaps — tests reservation mode under deep inversion',
+    description: 'Two low-priority orgs saturate cluster to ~86%, deeporigin\'s own background fills more — critical 256-CPU job can\'t fit without reservation mode draining resources',
     phase: 6,
     workloadConfig: {
       durationSeconds: 86400,
       arrivalPattern: {
         type: 'periodic_mix',
         templates: [
-          // org-gamma: continuous medium jobs that saturate cluster (32 CPU, 3h, every 2m)
-          { name: 'Gamma-fill-32cpu',   orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 10800, intervalSeconds: 120,  userPriority: 3, toolPriority: 3 },
-          // deeporigin: 5 critical large jobs (256 CPU, 1h, every ~4.8h)
-          { name: 'Alpha-critical-256', orgId: 'deeporigin', cpu: 256, memory: 1024, gpu: 0, durationSeconds: 3600,  intervalSeconds: 17280, userPriority: 5, toolPriority: 5 },
-          // org-beta: opportunistic small jobs that try to fill gaps (4 CPU, 10m, every 2m)
-          { name: 'Beta-opportunistic', orgId: 'org-beta',   cpu: 4,   memory: 16,   gpu: 0, durationSeconds: 600,   intervalSeconds: 120,  userPriority: 1, toolPriority: 1 },
+          // org-gamma: 16 CPU jobs, 3h duration, every 2 min
+          // 10800s / 120s = 90 arrivals per 3h window, but quota caps at
+          // 24 concurrent (24 × 16 = 384 CPU = quota limit)
+          { name: 'Gamma-fill-16cpu',   orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 10800, intervalSeconds: 120,  userPriority: 2, toolPriority: 2 },
+          // org-beta: 32 CPU jobs, 2h duration, every 2 min
+          // 7200s / 120s = 60 arrivals per 2h window, quota caps at
+          // 12 concurrent (12 × 32 = 384 CPU = quota limit)
+          { name: 'Beta-fill-32cpu',    orgId: 'org-beta',   cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 7200,  intervalSeconds: 120,  userPriority: 2, toolPriority: 2 },
+          // deeporigin background: 32 CPU jobs, 1h, every 3 min
+          // 3600s / 180s = 20 concurrent × 32 = 640 CPU demand,
+          // but cluster headroom after gamma+beta = ~594 CPU,
+          // so ~18 concurrent fit (576 CPU). Total occupied: ~1,344 CPU.
+          // Only ~18 CPU free — the 256-CPU critical job CANNOT fit.
+          { name: 'DO-background-32cpu', orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 180,  userPriority: 3, toolPriority: 3 },
+          // deeporigin critical: 5 large jobs (256 CPU, 1h, every ~4.8h)
+          // Must trigger reservation mode to accumulate 256 free CPU
+          // by blocking new dispatches until enough jobs complete.
+          { name: 'DO-critical-256cpu', orgId: 'deeporigin', cpu: 256, memory: 1024, gpu: 0, durationSeconds: 3600,  intervalSeconds: 17280, userPriority: 5, toolPriority: 5 },
         ],
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 10002,
-    },
-  },
-  {
-    id: 'ttl-expiry-cascade',
-    name: 'A3: TTL Expiry Cascade',
-    description: 'Deliberate overload at 60 jobs/hr with mixed sizes and 2h TTL — tests queue churn as expired jobs cascade (set TTL to 7200s in config)',
-    phase: 6,
-    workloadConfig: {
-      durationSeconds: 43200,
-      arrivalPattern: { type: 'poisson', lambdaPerMinute: 1.0 },
-      sizeDistribution: { type: 'mixed', small: 50, medium: 35, large: 15 },
-      seed: 10003,
     },
   },
   {

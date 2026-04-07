@@ -36,11 +36,14 @@ import {
   evictExpired,
   runScheduler,
 } from './scheduler';
-import { predict } from './virtual-cluster';
 import { useConfigStore } from './store';
 import { loadSimState, persistSimState } from './sim-persistence';
 import type { CRMQConfig, Org } from './types';
 import { generateWorkload, SCENARIO_PRESETS } from './benchmark/traffic';
+import {
+  stripConfig,
+} from './workers/config-serde';
+import type { PredictRequest, PredictResponse } from './workers/prediction.worker';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -210,6 +213,100 @@ const initial = {
   orgUsage: catchUp?.orgUsage ?? restored?.orgUsage ?? defaultOrgUsage(),
 };
 
+// ── Prediction Worker ───────────────────────────────────────────────────────
+
+let _predWorker: Worker | null = null;
+let _predReqId = 0;
+/** ID of the latest request we sent — ignore stale results */
+let _latestPredId = 0;
+/** Whether a prediction is currently in flight */
+let _predInFlight = false;
+/** Queued request to send once the current one completes */
+let _pendingPredInput: PredictRequest | null = null;
+/** Counter for skipping predictions at high queue sizes */
+let _predSkipCounter = 0;
+
+const getPredWorker = (): Worker | null => {
+  if (typeof window === 'undefined') return null;
+  if (!_predWorker) {
+    try {
+      _predWorker = new Worker(
+        new URL(
+          './workers/prediction.worker.ts',
+          import.meta.url,
+        ),
+      );
+      _predWorker.onmessage = (
+        e: MessageEvent<PredictResponse>,
+      ) => {
+        const msg = e.data;
+        if (msg.type !== 'result') return;
+        _predInFlight = false;
+
+        // Only apply if this is the latest request
+        if (msg.id === _latestPredId) {
+          useSimStore.setState({
+            predictions: msg.predictions,
+          });
+        }
+
+        // If a newer request was queued, send it now
+        if (_pendingPredInput) {
+          const pending = _pendingPredInput;
+          _pendingPredInput = null;
+          sendPrediction(pending);
+        }
+      };
+    } catch {
+      // Worker creation failed — predictions will
+      // be empty (graceful degradation)
+      return null;
+    }
+  }
+  return _predWorker;
+};
+
+const sendPrediction = (req: PredictRequest) => {
+  const w = getPredWorker();
+  if (!w) return;
+  _predInFlight = true;
+  _latestPredId = req.id;
+  w.postMessage(req);
+};
+
+/**
+ * Request an async prediction from the worker.
+ * If a prediction is already in flight, queues the
+ * latest input and sends it when the worker is free.
+ */
+const requestPrediction = (
+  queue: Job[],
+  active: RunningJob[],
+  orgUsage: OrgUsageMap,
+  currentTime: number,
+  cfg: CRMQConfig,
+  orgs: Org[],
+) => {
+  const req: PredictRequest = {
+    type: 'predict',
+    id: ++_predReqId,
+    queue,
+    active,
+    orgUsage,
+    currentTime,
+    config: stripConfig(cfg),
+    orgs,
+  };
+
+  if (_predInFlight) {
+    // Overwrite any previously queued request —
+    // only the latest state matters
+    _pendingPredInput = req;
+  } else {
+    sendPrediction(req);
+  }
+};
+
 // ── Store ───────────────────────────────────────────────────────────────────
 
 export const useSimStore = create<SimStore>()(
@@ -223,11 +320,17 @@ export const useSimStore = create<SimStore>()(
       const now = st.simTime + dt;
 
       const newLogs: LogEntry[] = [];
-      const log = (t: number, msg: string, type: LogType = 'info') => {
+      const log = (
+        t: number,
+        msg: string,
+        type: LogType = 'info',
+      ) => {
         newLogs.push(mkLog(t, msg, type));
       };
 
-      const comp = completeJobs(st.active, dt, now, st.orgUsage, cfg, log);
+      const comp = completeJobs(
+        st.active, dt, now, st.orgUsage, cfg, log,
+      );
       const ttl = evictExpired(st.queue, now, log);
       const res = runScheduler(
         ttl.live, comp.stillRunning, comp.orgUsage,
@@ -236,23 +339,58 @@ export const useSimStore = create<SimStore>()(
       );
 
       const newQueue = res.queue as Job[];
-      let preds: PredictionMap = {};
-      if (newQueue.length > 0) {
-        preds = predict(newQueue, res.active, res.orgUsage, now, cfg, orgs);
-      }
 
+      // Update store immediately (no blocking)
       set({
         simTime: now,
         queue: newQueue,
         active: res.active,
-        completed: [...comp.completed, ...st.completed].slice(0, 60),
-        evicted: [...(ttl.evicted as EvictedJob[]), ...st.evicted].slice(0, 30),
+        completed: [
+          ...comp.completed,
+          ...st.completed,
+        ].slice(0, 60),
+        evicted: [
+          ...(ttl.evicted as EvictedJob[]),
+          ...st.evicted,
+        ].slice(0, 30),
         logs: [...newLogs, ...st.logs].slice(0, 150),
         orgUsage: res.orgUsage,
         reservMode: res.reservMode,
         reservTarget: res.reservTarget,
-        predictions: preds,
       });
+
+      // Fire predictions async via worker.
+      // Skip when queue is very large — the worker
+      // can't keep up and results would be stale.
+      if (newQueue.length === 0) {
+        set({ predictions: {} });
+      } else if (newQueue.length <= 200) {
+        requestPrediction(
+          newQueue,
+          res.active,
+          res.orgUsage,
+          now,
+          cfg,
+          orgs,
+        );
+      } else {
+        // For large queues, only predict every
+        // ~5 ticks (based on simTime modulo).
+        // This keeps predictions available but
+        // avoids saturating the worker.
+        _predSkipCounter++;
+        if (_predSkipCounter >= 5) {
+          _predSkipCounter = 0;
+          requestPrediction(
+            newQueue,
+            res.active,
+            res.orgUsage,
+            now,
+            cfg,
+            orgs,
+          );
+        }
+      }
     },
 
     start: () => set({ running: true }),
@@ -363,8 +501,26 @@ export const useSimStore = create<SimStore>()(
 
 let _intervalId: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * Adaptive tick interval — slows down when the queue
+ * is large to keep the UI responsive.
+ *   ≤ 100 jobs → 200ms (5 fps)
+ *   ≤ 300 jobs → 400ms
+ *   ≤ 600 jobs → 600ms
+ *   > 600 jobs → 1000ms (1 fps)
+ */
+const getTickInterval = (): number => {
+  const qLen =
+    useSimStore.getState().queue.length;
+  if (qLen <= 100) return 200;
+  if (qLen <= 300) return 400;
+  if (qLen <= 600) return 600;
+  return 1000;
+};
+
 const syncInterval = () => {
-  const { running, speed, tick } = useSimStore.getState();
+  const { running, speed, tick } =
+    useSimStore.getState();
 
   if (_intervalId) {
     clearInterval(_intervalId);
@@ -372,14 +528,38 @@ const syncInterval = () => {
   }
 
   if (running) {
-    _intervalId = setInterval(() => tick(speed), 200);
+    const ms = getTickInterval();
+    _intervalId = setInterval(
+      () => tick(speed),
+      ms,
+    );
   }
 };
 
+/**
+ * Bucket the queue length so we only re-sync
+ * the interval when crossing a threshold.
+ */
+const queueBucket = (len: number): number => {
+  if (len <= 100) return 0;
+  if (len <= 300) return 1;
+  if (len <= 600) return 2;
+  return 3;
+};
+
 useSimStore.subscribe(
-  (s) => ({ running: s.running, speed: s.speed }),
+  (s) => ({
+    running: s.running,
+    speed: s.speed,
+    qBucket: queueBucket(s.queue.length),
+  }),
   syncInterval,
-  { equalityFn: (a, b) => a.running === b.running && a.speed === b.speed },
+  {
+    equalityFn: (a, b) =>
+      a.running === b.running &&
+      a.speed === b.speed &&
+      a.qBucket === b.qBucket,
+  },
 );
 
 // Kick-start immediately if restored as running (after catch-up)

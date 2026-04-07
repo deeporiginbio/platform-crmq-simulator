@@ -2,7 +2,7 @@
 
 'use client';
 
-import { Box, Badge, Collapse, Divider, Group, Stack, Table, Text, ThemeIcon } from '@mantine/core';
+import { Box, Badge, Collapse, Divider, Group, Stack, Table, Text } from '@mantine/core';
 import { useState } from 'react';
 import { SCENARIO_PRESETS } from '@/lib/benchmark';
 import type { ScenarioPreset, ArrivalPattern, JobSizeDistribution } from '@/lib/benchmark';
@@ -17,12 +17,11 @@ const fmtDuration = (sec: number): string => {
 };
 
 const phaseMeta: Record<number, { label: string; color: string; description: string }> = {
-  1: { label: 'Phase 1 — MVP', color: 'blue', description: 'Core scheduling scenarios that validate fundamental behavior' },
-  2: { label: 'Phase 2 — Advanced', color: 'indigo', description: 'Multi-tenant fairness, GPU contention, and dynamic load patterns' },
-  3: { label: 'Phase 3 — Edge Cases', color: 'violet', description: 'Extreme distributions, resource exhaustion, and production-grade simulation' },
-  4: { label: 'Stress Tests', color: 'red', description: 'High-intensity edge cases that push scheduling mechanisms to their limits' },
-  5: { label: 'Realistic Workloads', color: 'teal', description: 'Production-like patterns modeling real usage cycles and multi-step pipelines' },
-  6: { label: 'Adversarial', color: 'orange', description: 'Game-theory scenarios testing formula exploitability and starvation bounds' },
+  1: { label: 'Core', color: 'blue', description: 'Core scheduling scenarios that validate fundamental behavior' },
+  2: { label: 'Advanced', color: 'violet', description: 'Multi-tenant fairness, GPU contention, and production-grade simulation' },
+  4: { label: 'Stress', color: 'red', description: 'High-intensity scenarios that push scheduling mechanisms to their limits' },
+  5: { label: 'Realistic', color: 'teal', description: 'Production-like patterns modeling real usage cycles and multi-step pipelines' },
+  6: { label: 'Adversarial', color: 'pink', description: 'Game-theory scenarios testing formula exploitability and starvation bounds' },
 };
 
 // ── Cluster reference for calibration context ───────────────────────────────
@@ -51,15 +50,10 @@ const DEEP_DIVE: Record<string, string[]> = {
     'Tests backfill effectiveness: when a large job is waiting for resources, can the scheduler fill the gap with small jobs? The mixed sizes create fragmentation — a classic bin-packing challenge.',
     'Expected behavior: small jobs have near-zero wait times (dispatched immediately via backfill). Large jobs wait longer. Good formulas minimize large-job wait without sacrificing small-job throughput.',
   ],
-  'priority-inversion': [
-    '150 jobs burst with random priorities (1–5). When all jobs arrive simultaneously, the scheduler must correctly order them by priority rather than FIFO.',
-    'Tests the aging mechanism: without aging, low-priority jobs could wait indefinitely while high-priority jobs keep arriving (in longer scenarios). Here, the burst ensures the priority ladder is exercised.',
-    'Expected behavior: priority 5 jobs dispatch first, priority 1 jobs last. The wait-time spread between priority levels measures how well the formula respects priority. Aging should eventually rescue starved jobs.',
-  ],
   'multi-tenant-competition': [
-    '3 orgs (deeporigin, org-beta, org-gamma) compete for shared resources. deeporigin has the largest quota (1364 CPU), while beta and gamma share 384 CPU each.',
-    'Tests org-level fairness under contention. When total demand exceeds supply, does each org get its fair share proportional to its quota? The DRF and Balanced Composite formulas are specifically designed for this.',
-    'Expected behavior: Jain\'s Fairness Index should be near 1.0 for resource-aware formulas. Simple weighted scoring may favor whichever org happens to submit jobs first.',
+    'Asymmetric 3-org contention over 30 minutes. deeporigin submits 2 large 64-CPU jobs/min (384 CPU concurrent, ~28% of its 1,364 quota). org-beta floods 30 small 4-CPU jobs/min (240 CPU concurrent, within 384 quota). org-gamma submits 6 medium 32-CPU jobs/min (960 CPU demand, capped at 384 by quota). Combined demand: ~1,584 CPU vs 1,362 available.',
+    'Tests org-level fairness under deliberate asymmetry. Each org has a different submission strategy: deeporigin uses few large jobs, org-beta uses many small ones, org-gamma hits its quota wall. The formula must allocate cluster resources fairly despite 15× volume difference (org-beta vs deeporigin).',
+    'Key metrics: per-org wait time and throughput ratios. Good formulas give each org resources proportional to its quota share. org-gamma\'s queue should grow (demand exceeds quota) while org-beta\'s small jobs flow freely. deeporigin\'s large jobs should get priority via org weight.',
   ],
   'gpu-scarcity': [
     'Only 192 GPUs available across the cluster (mason-gpu pool). At 8 jobs/min with 4–16 GPU each, the GPU pool saturates within minutes: 8 × avg 10 GPU × avg 10 min = ~800 GPU-minutes/min demand vs 192 × 10 = 1920 GPU-minutes/min supply.',
@@ -71,81 +65,87 @@ const DEEP_DIVE: Record<string, string[]> = {
     'Tests the interaction between reservation mode and backfilling. Without backfill, a single large job waiting for resources would block all 95% small jobs behind it — classic head-of-line blocking.',
     'Expected behavior: the scheduler enters reservation mode for large jobs (holding resources as they free up) while still dispatching small jobs via backfill. Throughput should remain high despite occasional large-job queuing.',
   ],
-  'ramp-up-down': [
-    'MMPP (Markov-Modulated Poisson Process) cycles through 3 states: quiet (5/min, 30% weight), busy (30/min, 50% weight), peak (60/min, 20% weight). State transitions every 10 minutes.',
-    'Tests adaptability to changing load. The scheduler must handle both under-utilization (quiet periods) and over-saturation (peak bursts) gracefully. This is the most realistic arrival pattern for production workloads.',
-    'Expected behavior: wait times spike during peak phases and recover during quiet phases. Good formulas maintain fairness even when load oscillates dramatically.',
-  ],
-  'heavy-tailed': [
-    'Pareto distribution (α=1.5) generates extreme size variance. Most jobs are small, but occasional massive outliers can demand 128 CPU + 512 GB + 16 GPU for up to 8 hours.',
-    'Tests robustness to extreme variance. The "80/20 rule" applies: 80% of resource consumption comes from 20% of jobs. The scheduler must handle these outliers without destabilizing the rest of the queue.',
-    'Expected behavior: highly variable wait times. The coefficient of variation (CoV) metric is key here — good formulas keep CoV low despite the extreme input variance.',
-  ],
-  'zero-headroom': [
-    '300 massive jobs arrive at once. Each demands 32–128 CPU, 128–512 GB memory, 0–4 GPU, and runs 10–30 minutes. Total demand: ~300 × avg 80 CPU = ~24,000 CPU-units vs 1,362 available — 18× oversubscription.',
-    'Tests TTL eviction. When jobs wait too long in queue, they should be evicted (respecting TTL) rather than clogging the system indefinitely. This scenario pushes the eviction mechanism to its limits.',
-    'Expected behavior: high eviction rates. The system must prioritize the most valuable jobs and gracefully evict the rest. Formulas that handle this well show controlled eviction patterns rather than random drops.',
-  ],
   'full-24h-simulation': [
-    'Deterministic workload using 6 fixed job templates across 3 orgs. Templates repeat at fixed intervals (3–10 minutes) over 24 hours, producing ~1,695 total jobs. A ±5% arrival jitter prevents identical replications.',
-    'Tests production-like scheduling over a full day cycle. The mix includes a massive job (TypeA: 192 CPU, 6hr duration) that dominates deeporigin\'s allocation, alongside many small background jobs.',
-    'The TypeA job is particularly interesting: at 192 CPU every 5 minutes with a 6-hour duration, multiple instances overlap — up to ~72 concurrent TypeA jobs consuming 192 × 72 = 13,824 CPU-minutes/hr. This exceeds deeporigin\'s quota, creating sustained reservation-mode pressure.',
+    'Three orgs each submit medium-large jobs (96, 48, 64 CPU) plus background over 24 hours at ~105% cluster capacity. All three orgs compete for scarce pool capacity, with org-beta and org-gamma hitting their 384-CPU quota walls.',
+    'Unlike the original design where a single org\'s massive job queued on capacity alone (making the formula irrelevant), this version creates genuine cross-org priority contention: when the pool is full, the formula must decide whether deeporigin\'s 96-CPU job or org-gamma\'s 64-CPU job gets the next slot.',
+    'Key metric: formula differentiation. If all formulas still produce identical results, the bottleneck is purely mechanical (quota/capacity). The redesigned scenario ensures the scoring function is the tie-breaker, not just physics.',
   ],
 
   // Phase 4 — Stress Tests
   'queue-flood': [
-    'Models a denial-of-service-like scenario: org-beta floods the queue with ~2,009 tiny jobs (2 CPU, 5m each) arriving every 43 seconds. Meanwhile, deeporigin submits 20 critical large jobs (128 CPU, 2h each) every 72 minutes — these represent high-value work that must not be drowned.',
-    'The key test is priority isolation under queue pressure. Total org-beta CPU demand: 2,009 × 2 = 4,018 CPU-units, but they\'re capped at 400 CPU. Total deeporigin demand: 20 × 128 = 2,560 CPU-units. The formula must ensure deeporigin\'s large jobs get scheduled ahead of the flood despite org-beta having 100× more queue entries.',
-    'org-gamma (240 medium 16-CPU jobs) is the "collateral damage" indicator — if their wait times spike during the flood, the formula is letting the flood affect innocent bystanders. Good formulas should show flat org-gamma wait times regardless of org-beta\'s flood volume.',
+    'org-beta floods 2,880 jobs (8 CPU, 30min each) every 30 seconds, saturating its 384-CPU quota with 48 running and ~12 always queued. deeporigin submits 128-CPU critical jobs hourly plus 32-CPU background every 5 min (~640 CPU). org-gamma pushes 32-CPU jobs every 4 min (480 demand, capped at 384). Total demand: ~1,408 CPU vs 1,362 available.',
+    'The key test is priority isolation under combined queue volume AND resource pressure. All three orgs hit quota walls simultaneously, and total demand exceeds pool capacity. The formula must prioritize deeporigin\'s critical 128-CPU jobs over the flood while also giving org-gamma fair access.',
+    'org-gamma remains the "collateral damage" indicator — if their wait times spike disproportionately during the flood, the formula is letting volume drown out priority. Good formulas show stable org-gamma wait times regardless of org-beta\'s 2,880-job flood.',
   ],
   'whale-blockade': [
-    'A single job demands 768 CPU — 56% of the entire mason pool (1,362 cores). This physically cannot run alongside normal operations. The whale must wait until enough jobs complete to free 768 CPUs, then claim them all.',
-    'Tests the reservation mode mechanism: after N scheduling cycles where the whale is skipped, it should enter reservation mode, where freed resources are held rather than given to smaller jobs. During this time, smaller jobs should still backfill on the remaining ~596 CPUs.',
-    'The whale wait time is the key metric — it measures the starvation bound for the largest possible job. With 200 background small jobs (8–12 CPU, 15–20m) cycling, resources should free up within ~1–2 hours. If the whale waits significantly longer, reservation mode or backfilling is malfunctioning.',
+    'The 768-CPU whale (56% of mason pool) arrives every 5 hours into ~768 CPU of background load: org-beta 384 (at quota cap), org-gamma 288, and deeporigin medium 96. Available capacity: 1,360 − 768 = 592 < 768. The whale physically cannot fit without draining background jobs.',
+    'Tests reservation mode: after the whale is skipped 3+ times, it enters reservation mode — freed resources are held rather than given to new dispatches. Background jobs must complete (freeing ~16 CPU each) until 768 CPU accumulates. Small jobs should still backfill on remaining capacity.',
+    'Key metric: whale wait time. The whale needs ~432 additional CPU freed. With 16-CPU background jobs completing every ~45–50 seconds, reservation mode should collect enough resources in ~20–40 minutes. If significantly longer, reservation mode or backfill is malfunctioning.',
   ],
   'gpu-famine': [
     'Runs entirely in the GPU pool (mason-gpu: 768 CPU, 192 GPU). The scoring formula uses CPU-based org-load, but the actual bottleneck is GPU count. This tests whether CPU-based scoring correctly reflects GPU-pool contention.',
     'Total GPU demand: deeporigin 120 × 32 GPU = 3,840 GPU-slots, org-beta 480 × 4 = 1,920, org-gamma 72 × 16 = 1,152. Total 6,912 GPU-slots vs 192 available — 36× oversubscribed. deeporigin alone requests 2× the entire GPU pool per cycle.',
     'Open question this scenario answers: since org-load tracks CPU usage within the pool (not GPU count), there may be a mismatch where an org appears "light" on CPU but is actually hoarding GPUs. If GPU utilization is high but fairness is poor, the formula may need a GPU-aware term.',
   ],
+  'sustained-pareto-stress': [
+    'Heavy Pareto load (α=1.5) at 18 jobs/min over 24 hours. Average job is ~24 CPU with ~3 min mean duration → ~54 concurrent × 24 CPU ≈ 1,296 CPU (~95% utilization). The Pareto tail produces 128-CPU outliers that tip the cluster into transient overload.',
+    'At 95% baseline utilization, any tail-event (large CPU or long duration) pushes past capacity and creates a queue spike. These spikes trigger reservation mode, which must resolve quickly before the next outlier arrives. The cycle of spike→reservation→backfill→recovery repeats throughout the 24-hour run.',
+    'Key metric: queue recovery time. After each large-job spike, how quickly does the queue return to manageable depth? The queue should oscillate (not grow monotonically) because average demand is below capacity — only the Pareto tail creates overload.',
+  ],
+
   'cascading-failure': [
-    'Models sustained load with Pareto-distributed job sizes (α=1.5), producing extreme variance. At 25 jobs/hr (~0.42/min), the cluster sees a mix of tiny and massive jobs. The Pareto distribution means ~80% of resource consumption comes from ~20% of jobs.',
-    'Note: the full scenario from the report includes mid-simulation events (killing 30% of running jobs at t=6h, 20% at t=12h, reducing capacity at t=18h). These events require DES engine extensions not yet implemented. The current version tests the heavy-tailed load dynamics only.',
-    'Even without explicit failure events, the Pareto load creates natural "cascading" behavior: when a massive outlier job finally completes, it releases a burst of resources that triggers rapid queue drain — similar to a failure-recovery pattern.',
+    'MMPP simulates failure-recovery cycles over 24 hours. Normal state (1/min, 45% of time, ~67% util) represents steady operations. Failure-burst state (4/min, 20%, ~270% util) represents resubmitted jobs after node crashes — ~120 jobs flood the queue in 30 minutes. Degraded state (0.2/min, 35%, ~13% util) is the quiet recovery period.',
+    'State transitions every 30 minutes create recurring failure-recovery cycles. During bursts, the queue spikes dramatically and the scheduler must triage effectively — high-priority jobs dispatch first while low-priority ones queue. During degraded periods, the queue drains and the scheduler recovers to normal operating metrics.',
+    'Key metric: recovery time — how many minutes after a burst does the queue return to manageable depth? Also measures fairness stability: do per-org wait time ratios stay consistent across normal and burst phases, or does one org disproportionately suffer during failures?',
   ],
 
   // Phase 5 — Realistic Production Workloads
   'monday-morning-rush': [
-    'Models real-world usage with a Markov-Modulated Poisson Process (MMPP): night shift (5 jobs/hr, 38% of time), regular day (35 jobs/hr, 42%), and morning peak (70 jobs/hr, 20%). State transitions every hour create realistic load cycling over 48 hours.',
-    'The 65/25/10 mixed job sizes (small/medium/large) represent a real platform: small jobs are interactive notebooks and quick analyses, medium jobs are pipeline runs, and large jobs are full docking or training workloads.',
-    'Expected pattern: night-time jobs run freely on idle cluster. Morning peak creates a queue that gradually drains during the regular day period. Day 2 should show similar patterns, validating that the scheduler reaches steady-state behavior.',
+    'Models real-world usage with a Markov-Modulated Poisson Process (MMPP): night (2/min, 38% of time), regular day (15/min, 42%), and morning peak (30/min, 20%). State transitions every hour create realistic load cycling over 48 hours.',
+    'Night: ~2/min × ~2 min avg × ~20 CPU ≈ 600 CPU demand (~44% util, no queuing). Day: ~15/min creates moderate overload and growing queues. Peak: ~30/min → ~9,000 CPU demand (~7× cluster), creating heavy queuing and contention.',
+    'Expected pattern: night-time jobs run freely. Morning peak creates significant queues that partially drain during the regular day period. Day 2 should show similar patterns, validating that the scheduler reaches steady-state behavior across day/night cycles.',
   ],
   'dominant-tenant': [
     'org-beta submits 70% of all jobs (~504 small 4-CPU jobs/day) while deeporigin submits only 10% (~72 large 128-CPU jobs). Despite the volume asymmetry, both orgs contribute similar total CPU-hours: org-beta ≈ 504 × 4 × 0.25h = 504 CPU-hrs, deeporigin ≈ 72 × 128 × 4h = 36,864 CPU-hrs.',
     'Tests whether the org-load term correctly prevents the high-volume submitter from monopolizing queue positions. Without cluster-state awareness, org-beta\'s 504 jobs would crowd out deeporigin\'s 72 despite deeporigin consuming 73× more CPU-hours.',
     'The org CPU cap (org-beta: 400 CPU) is the primary defense — org-beta can never run more than 100 concurrent 4-CPU jobs. But the formula should also ensure deeporigin\'s large jobs don\'t wait unreasonably just because beta has more queue entries.',
   ],
+  'mixed-multi-org': [
+    'Diverse job types at ~100% cluster utilization. deeporigin: prep (8 CPU, every 5m) + compute (32 CPU, every 6m) + GPU (8 GPU, every 12m). org-beta: prep (16 CPU, every 5m) + compute (64 CPU, every 6m → 640 demand, capped at 384). org-gamma: analysis (16 CPU) + compute (32 CPU) + background (8 CPU) → 480 demand, capped at 384.',
+    'Both org-beta and org-gamma hit their 384-CPU quota walls, creating real queue pressure. Combined running load: DO ~344 + beta 384 + gamma 384 ≈ 1,112 CPU (~82% util). Queued jobs from beta and gamma create scoring contention that the formula must resolve.',
+    'Key metric: per-org wait time fairness across different job sizes. org-beta\'s 64-CPU compute jobs queue behind quota, while org-gamma\'s smaller 32-CPU and 8-CPU jobs compete for the same quota headroom. deeporigin\'s GPU jobs add cross-pool pressure.',
+  ],
+
   'workflow-chains': [
-    'Models three concurrent pipeline types: MolProps (CPU prep → CPU main → GPU finish), Docking (CPU-CPU), and Analysis (lightweight CPU-only), each producing 5 workflows/hour plus background standalone jobs.',
-    'Note: the simulator does not yet support true sequential dependencies. Steps are modeled as independent jobs arriving at the same rate. The resource profile is faithful — each step has the correct CPU/memory/GPU — but they run independently rather than sequentially.',
-    'The MolProps pipeline is the most interesting: its Step 3 requires 8 GPUs, meaning it enters the GPU pool queue. In the full implementation, this step would inherit its workflow\'s accumulated age from the CPU pool. This scenario establishes the resource-demand baseline for when workflow support is added.',
+    'Three concurrent pipelines at ~95% cluster util. MolProps (deeporigin): 20 prep/hr → 10 compute/hr → 5 GPU-finish/hr. Docking (org-beta): 20 prep/hr → 7.5 main/hr (64 CPU each, 480 demand capped at 384 by quota). Analysis (org-gamma): 20 prep/hr → 10 main/hr (32 CPU each) + background.',
+    'org-beta\'s docking-main stage (64 CPU, every 8 min) exceeds its 384-CPU quota — 7.5 concurrent × 64 = 480 demand. ~1.5 jobs always queue, creating real scoring contention. org-gamma\'s combined analysis + background approaches its 384 quota at ~307 CPU. CPU pool total: ~1,051 running.',
+    'Key test: cross-pool and cross-pipeline fairness. deeporigin\'s GPU-finish stage (8 GPU each, 10 concurrent = 80 GPU) competes in the mason-gpu pool while all other jobs use mason. The formula must balance pipeline stages — prep jobs should backfill around large compute jobs without starving any stage.',
   ],
 
   // Phase 6 — Adversarial & Game-Theory
   'job-splitting-attack': [
-    'A controlled fairness experiment: deeporigin and org-beta both need 5,120 CPU-hours of work done. deeporigin submits honestly (10 × 128 CPU × 4h), while org-beta splits into 320 × 4 CPU × 4h. Same work, different packaging.',
-    'If the formula is fair, both orgs should receive approximately equal total CPU-hours (±10%). If org-beta gets significantly more, the formula rewards job-splitting. If deeporigin gets more, the formula penalizes it (large-job bias).',
-    'The org-load term is critical here: as org-beta\'s many small jobs consume CPU, the (1 - orgLoad) term should throttle further org-beta dispatches, equalizing with deeporigin. Without this term, org-beta\'s 320 queue entries would dominate the scheduling queue.',
+    'Background deeporigin load fills ~640 CPU (20 × 32-CPU '
+    + 'jobs), then deeporigin submits 128-CPU honest jobs every '
+    + '20 min (~6 concurrent = 768 CPU) while org-beta submits '
+    + '4-CPU split jobs every 38 s (~384 CPU at quota cap). '
+    + 'Both deliver ~760 CPU-hrs/hr — same work, different '
+    + 'packaging.',
+    'Total demand: ~1,792 CPU vs 1,362 cluster. deeporigin '
+    + 'alone exceeds its 1,364 quota (640 + 768 = 1,408), so '
+    + 'honest 128-CPU jobs queue. org-beta\'s 189 theoretical '
+    + 'concurrent jobs are capped to 96 by the 384-CPU quota. '
+    + 'Both orgs face real contention at Gate 1 and Gate 2.',
+    'If the formula is fair, both orgs should receive '
+    + 'approximately equal total CPU-hours (±15%). If org-beta '
+    + 'gets significantly more, small jobs game backfill. If '
+    + 'deeporigin gets more, large jobs get unfair reservation '
+    + 'priority. The org-load term should equalize dispatch '
+    + 'rates as each org\'s running load grows.',
   ],
   'priority-inversion-stress': [
-    'Creates deep priority inversion: org-gamma (mid-priority) fills 90% of the cluster with 32-CPU jobs, then deeporigin (highest priority) submits 5 critical 256-CPU jobs that physically cannot fit. Meanwhile, org-beta (lowest priority) keeps submitting tiny 4-CPU jobs that CAN fit in the remaining gaps.',
-    'The critical test: does the scheduler let org-beta\'s small jobs "steal" the resources deeporigin needs? Without reservation mode, every time a gamma job completes and frees 32 CPUs, org-beta\'s tiny jobs could grab those 32 CPUs before deeporigin can accumulate 256 CPUs.',
-    'Reservation mode should activate: once deeporigin\'s 256-CPU job is skipped N times, freed resources are reserved (held) rather than given to new jobs. This allows 256 CPUs to accumulate over ~8 gamma-job completions, then the critical job dispatches.',
-  ],
-  'ttl-expiry-cascade': [
-    'Deliberate sustained overload: 60 jobs/hr with mixed sizes (50% small, 35% medium, 15% large) against a 1,362-CPU cluster. With an average job size of ~25 CPU and ~45 min duration, steady-state demand ≈ 45 concurrent jobs × 25 CPU = 1,125 CPU, close to capacity.',
-    'The 2-hour TTL creates a cascade effect: after the first 2 hours, jobs that never got scheduled start expiring, freeing queue slots. This creates a "wave" pattern where new jobs compete with the drainage of expired entries. The system should reach equilibrium where arrivals ≈ completions + evictions.',
-    'Key insight: the 15% large jobs (64–256 CPU) are most likely to expire, since they\'re hardest to schedule. This means the eviction pattern is not random — it selectively removes the largest jobs, which could skew the running workload toward small jobs. The formula should counteract this bias.',
+    'Three-layer saturation: org-gamma fills 384 CPU (24 × 16-CPU jobs at quota limit), org-beta fills 384 CPU (12 × 32-CPU jobs at quota limit), and deeporigin\'s own background fills ~576 CPU (18 × 32-CPU jobs). Total: ~1,344 of 1,362 CPU occupied — only ~18 CPU free.',
+    'deeporigin\'s critical 256-CPU job arrives every ~4.8 hours and CANNOT fit. Without reservation mode, freed resources from completing jobs get immediately claimed by new background jobs from all three orgs. The 256-CPU job needs ~8 concurrent completions worth of headroom to dispatch.',
+    'Reservation mode must activate: after the critical job is skipped 3+ times, freed resources are reserved (held) rather than given to new dispatches. This allows 256 CPUs to accumulate as jobs complete naturally, then the critical job dispatches. Key metric: how long does the critical job wait?',
   ],
   'starvation-gauntlet': [
     'Absolute worst case for starvation: deeporigin streams 128-CPU jobs every 10 minutes (max priority 5/5), org-beta streams 64-CPU jobs every 10 minutes (high priority 4/4). Together they demand 144 × (128 + 64) = 27,648 CPU-units over 24h — far exceeding capacity.',
@@ -618,8 +618,7 @@ const ScenarioCard = ({ preset }: { preset: ScenarioPreset }) => {
 // ── Page Component ──────────────────────────────────────────────────────────
 
 const ScenariosPage = () => {
-  // Group by phase
-  const phases = [1, 2, 3, 4, 5, 6] as const;
+  const phases = [1, 2, 4, 5, 6] as const;
 
   return (
     <Box p="md">
@@ -628,7 +627,7 @@ const ScenariosPage = () => {
         <Box>
           <Text size="xl" fw={700} c="grey.9">Scenario Catalog</Text>
           <Text size="xs" c="dimmed" mt={2}>
-            {SCENARIO_PRESETS.length} benchmark scenarios across 3 phases — click any scenario to see full details
+            {SCENARIO_PRESETS.length} benchmark scenarios — click any scenario to see full details
           </Text>
         </Box>
 
@@ -655,6 +654,7 @@ const ScenariosPage = () => {
         {phases.map(phase => {
           const meta = phaseMeta[phase];
           const presets = SCENARIO_PRESETS.filter(p => p.phase === phase);
+          if (presets.length === 0) return null;
           return (
             <Box key={phase}>
               <Group gap="sm" mb="sm">

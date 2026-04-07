@@ -15,7 +15,7 @@
  */
 
 import type { CRMQConfig, Org } from '../types';
-import { runDES } from './des-engine';
+import { runDES, runDESAsync } from './des-engine';
 import type { DESConfig, DESResult } from './des-engine';
 import { computeMetrics } from './metrics';
 import { getFormula } from './scoring';
@@ -177,15 +177,34 @@ export const runBenchmarkSuite = async (
       });
 
 
-      // Run DES — with the scenario's scoring formula if specified
-      const formula = scenario.formulaId ? getFormula(scenario.formulaId) : undefined;
-      const desResult = runDES({
+      // Run DES — with the scenario's scoring formula.
+      // Use synchronous runDES when in a worker
+      // (faster, no yield overhead), and async on
+      // the main thread as a fallback.
+      const formula = scenario.formulaId
+        ? getFormula(scenario.formulaId)
+        : undefined;
+      const desConfig: DESConfig = {
         config: scenario.config,
         orgs: scenario.orgs,
         workload: wl,
-        maxSimTime: maxSimTime ?? workload.durationSeconds * 3,
+        maxSimTime:
+          maxSimTime ??
+          workload.durationSeconds * 3,
         scoringFn: formula?.score,
-      });
+      };
+
+      const inWorker =
+        typeof self !== 'undefined' &&
+        typeof (self as unknown as { Window?: unknown }).Window === 'undefined';
+
+      const desResult = inWorker
+        ? runDES(desConfig)
+        : await runDESAsync(
+            desConfig,
+            2000,
+            signal,
+          );
 
       // Detect warm-up
       let warmUpTime = 0;

@@ -2,7 +2,7 @@
 
 'use client';
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Box, Group, Stack, Text, UnstyledButton } from '@mantine/core';
 import type { Org, OrgUsageMap, ResourcePool, Resources, CRMQConfig } from '@/lib/types';
 import { zeroPoolUsage } from '@/lib/scheduler';
@@ -30,7 +30,7 @@ const MiniBar = ({ used, limit, color }: { used: number; limit: number; color: s
   );
 };
 
-export const OrgPanel = ({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => {
+export const OrgPanel = memo(({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const toggle = (orgId: string) => {
@@ -104,4 +104,6 @@ export const OrgPanel = ({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => {
       </Stack>
     </Box>
   );
-};
+});
+
+OrgPanel.displayName = 'OrgPanel';

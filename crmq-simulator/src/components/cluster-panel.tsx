@@ -2,7 +2,7 @@
 
 'use client';
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Box, Group, SimpleGrid, Stack, Text, UnstyledButton } from '@mantine/core';
 import type { Resources } from '@/lib/types';
 import classes from './cluster-panel.module.css';
@@ -58,7 +58,7 @@ const ResBar = ({ label, total, reserved, inUse, unit, color }: ResBarProps) => 
   );
 };
 
-export const ClusterPanel = ({ pools }: ClusterPanelProps) => {
+export const ClusterPanel = memo(({ pools }: ClusterPanelProps) => {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const toggle = (label: string) => {
@@ -129,4 +129,6 @@ export const ClusterPanel = ({ pools }: ClusterPanelProps) => {
       </Stack>
     </Box>
   );
-};
+});
+
+ClusterPanel.displayName = 'ClusterPanel';

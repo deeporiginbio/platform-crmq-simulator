@@ -133,6 +133,8 @@ export const predict = (
   currentTime: number,
   config: CRMQConfig,
   orgs: Org[],
+  /** Override the default 500 iteration cap */
+  maxIter?: number,
 ): PredictionMap => {
   // 1. Deep clone — this IS the "Virtual Cluster"
   let simQueue    = deepCloneArray(currentQueue);
@@ -163,7 +165,7 @@ export const predict = (
   }
 
   // 2. Event-driven fast-forward loop
-  const MAX_ITERATIONS = 500;
+  const MAX_ITERATIONS = maxIter ?? 500;
   let iteration = 0;
 
   while (simQueue.length > 0 && iteration < MAX_ITERATIONS) {

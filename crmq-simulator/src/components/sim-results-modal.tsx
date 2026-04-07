@@ -201,12 +201,6 @@ export const SimResultsModal = ({
                 </Text>
               </Box>
               <Box>
-                <Text size="xs" c="dimmed">Eviction Rate</Text>
-                <Text size="lg" fw={700} ff="monospace">
-                  {(metrics.evictionRate * 100).toFixed(1)}%
-                </Text>
-              </Box>
-              <Box>
                 <Text size="xs" c="dimmed">Throughput</Text>
                 <Text size="lg" fw={700} ff="monospace">
                   {metrics.throughputPerMin.toFixed(1)}/min

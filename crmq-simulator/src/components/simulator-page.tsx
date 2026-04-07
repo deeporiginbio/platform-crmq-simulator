@@ -2,7 +2,7 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Box, Button, Group, Stack, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { getJobPoolType } from '@/lib/types';
@@ -66,19 +66,27 @@ export const SimulatorPage = () => {
   };
   const formulaLabel = FORMULA_LABELS[normalizeFormulaType(cfg.formulaType ?? 'current_weighted')] ?? 'Current Weighted Score';
 
-  // Compute per-pool data for display
-  const poolDisplayData = cfg.cluster.pools.map((pool) => {
-    const poolJobs = active.filter(j => getJobPoolType(j, cfg) === pool.type);
-    const inUse = sumResources(poolJobs);
-    const avail = sub3(sub3(pool.total, pool.reserved), inUse);
-    return {
-      label: pool.label,
-      total: pool.total,
-      reserved: pool.reserved,
-      inUse,
-      avail,
-    };
-  });
+  // Compute per-pool data for display (memoized)
+  const poolDisplayData = useMemo(
+    () => cfg.cluster.pools.map((pool) => {
+      const poolJobs = active.filter(
+        j => getJobPoolType(j, cfg) === pool.type,
+      );
+      const inUse = sumResources(poolJobs);
+      const avail = sub3(
+        sub3(pool.total, pool.reserved),
+        inUse,
+      );
+      return {
+        label: pool.label,
+        total: pool.total,
+        reserved: pool.reserved,
+        inUse,
+        avail,
+      };
+    }),
+    [cfg, active],
+  );
 
   return (
     <Box className={styles.root}>

@@ -2,6 +2,7 @@
 
 'use client';
 
+import { memo } from 'react';
 import { Box, Group, ScrollArea, Stack, Text } from '@mantine/core';
 import type { CompletedJob, EvictedJob } from '@/lib/types';
 import { fmtTime } from '@/lib/scheduler';
@@ -12,7 +13,7 @@ interface HistoryPanelProps {
   evicted: EvictedJob[];
 }
 
-export const HistoryPanel = ({ completed, evicted }: HistoryPanelProps) => {
+export const HistoryPanel = memo(({ completed, evicted }: HistoryPanelProps) => {
   return (
     <Box className={classes.card}>
       <Stack gap={8}>
@@ -41,4 +42,6 @@ export const HistoryPanel = ({ completed, evicted }: HistoryPanelProps) => {
       </Stack>
     </Box>
   );
-};
+});
+
+HistoryPanel.displayName = 'HistoryPanel';

@@ -295,7 +295,6 @@ export interface AggregatedMetrics {
   p99WaitTime: ConfidenceInterval;
   maxWaitTime: ConfidenceInterval;
   jainsIndex: ConfidenceInterval;
-  evictionRate: ConfidenceInterval;
   coefficientOfVariation: ConfidenceInterval;
   utilization: Record<string, {
     cpu: ConfidenceInterval;
@@ -354,7 +353,6 @@ export const aggregateMetrics = (
     p99WaitTime: confidenceInterval(extract(m => m.p99WaitTime), confidence),
     maxWaitTime: confidenceInterval(extract(m => m.maxWaitTime), confidence),
     jainsIndex: confidenceInterval(extract(m => m.jainsIndex), confidence),
-    evictionRate: confidenceInterval(extract(m => m.evictionRate), confidence),
     coefficientOfVariation: confidenceInterval(extract(m => m.coefficientOfVariation), confidence),
     utilization,
     orgMetrics,
@@ -374,7 +372,6 @@ export interface ScenarioComparison {
   meanWaitTime: PairedTestResult;
   p95WaitTime: PairedTestResult;
   jainsIndex: PairedTestResult;
-  evictionRate: PairedTestResult;
   /** Which scenario "wins" on each dimension */
   winners: Record<string, string>;
 }
@@ -401,12 +398,7 @@ export const compareScenarios = (
     metricsA.map(m => m.jainsIndex),
     metricsB.map(m => m.jainsIndex),
   );
-  const evictionRate = pairedTTest(
-    metricsA.map(m => m.evictionRate),
-    metricsB.map(m => m.evictionRate),
-  );
-
-  // Determine winners (higher is better for throughput & fairness, lower is better for wait & eviction)
+  // Determine winners (higher is better for throughput & fairness, lower is better for wait)
   const winners: Record<string, string> = {};
   winners['throughput'] = throughput.significant
     ? (throughput.meanDifference > 0 ? nameA : nameB) : 'tie';
@@ -416,12 +408,10 @@ export const compareScenarios = (
     ? (p95WaitTime.meanDifference < 0 ? nameA : nameB) : 'tie';
   winners['jainsIndex'] = jainsIndex.significant
     ? (jainsIndex.meanDifference > 0 ? nameA : nameB) : 'tie';
-  winners['evictionRate'] = evictionRate.significant
-    ? (evictionRate.meanDifference < 0 ? nameA : nameB) : 'tie';
 
   return {
     nameA, nameB,
-    throughput, meanWaitTime, p95WaitTime, jainsIndex, evictionRate,
+    throughput, meanWaitTime, p95WaitTime, jainsIndex,
     winners,
   };
 };

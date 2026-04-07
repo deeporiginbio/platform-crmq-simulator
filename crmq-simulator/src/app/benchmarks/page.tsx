@@ -38,7 +38,6 @@ const phaseMeta: Record<
 > = {
   1: { label: 'Core', color: 'blue' },
   2: { label: 'Advanced', color: 'violet' },
-  3: { label: 'Edge Cases', color: 'orange' },
   4: { label: 'Stress', color: 'red' },
   5: { label: 'Realistic', color: 'teal' },
   6: { label: 'Adversarial', color: 'pink' },

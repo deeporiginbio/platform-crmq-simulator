@@ -5,13 +5,14 @@
  * ================
  * Zustand store that manages benchmark execution state.
  * Supports multi-scenario + multi-formula sequential execution.
+ *
+ * All DES work runs inside a Web Worker so the main thread
+ * (and the UI) never blocks during long-running benchmarks.
  */
 
 import { create } from 'zustand';
 import type { CRMQConfig, Org } from './types';
-import { DEFAULT_CONFIG, DEFAULT_ORGS } from './scheduler';
 import {
-  runBenchmarkSuite,
   getFormulas,
   SCENARIO_PRESETS,
 } from './benchmark';
@@ -19,10 +20,13 @@ import type {
   BenchmarkSuiteConfig,
   BenchmarkSuiteResult,
   ScenarioPreset,
-  ScoringFormula,
-  ArrivalPattern,
-  JobSizeDistribution,
 } from './benchmark';
+import { stripConfig } from './workers/config-serde';
+import type {
+  BenchmarkResponse,
+  SerializableSuiteConfig,
+  SerializableScenarioConfig,
+} from './workers/benchmark.worker';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -36,45 +40,28 @@ export type BenchmarkPhase =
 export interface FormulaSelection {
   id: string;
   name: string;
-  /** Optional config overrides for this formula */
   configOverrides?: Partial<CRMQConfig>;
 }
 
-/** Result for one workload scenario × all selected formulas */
 export interface MultiScenarioEntry {
   preset: ScenarioPreset;
   result: BenchmarkSuiteResult;
 }
 
 interface BenchmarkStore {
-  // ── State ──────────────────────────────────────────────────
   phase: BenchmarkPhase;
-  /** Selected scenario preset IDs (multi-select) */
   selectedScenarioIds: string[];
-  /** Selected formula IDs to compare */
   selectedFormulas: string[];
-  /** Number of replications */
   replications: number;
-  /** Progress 0–100 */
   progress: number;
   progressLabel: string;
-  /** Legacy single-scenario result (kept for compat) */
   result: BenchmarkSuiteResult | null;
-  /** Multi-scenario results — one entry per scenario */
   multiResults: MultiScenarioEntry[];
-  /** Error message if something went wrong */
   error: string | null;
-  /** AbortController for the current run (internal) */
-  _abortCtrl: AbortController | null;
 
-  // ── Actions ────────────────────────────────────────────────
-  /** Replace entire scenario selection */
   setSelectedScenarios: (ids: string[]) => void;
-  /** Toggle a single scenario on/off */
   toggleScenario: (id: string) => void;
-  /** Select all scenarios */
   selectAllScenarios: () => void;
-  /** Clear all scenarios */
   clearAllScenarios: () => void;
   toggleFormula: (id: string) => void;
   selectAllFormulas: () => void;
@@ -84,10 +71,31 @@ interface BenchmarkStore {
   reset: () => void;
 }
 
+// ── Worker Singleton ──────────────────────────────────────────────
+
+let _worker: Worker | null = null;
+
+const getWorker = (): Worker | null => {
+  if (typeof window === 'undefined') return null;
+  if (!_worker) {
+    try {
+      _worker = new Worker(
+        new URL(
+          './workers/benchmark.worker.ts',
+          import.meta.url,
+        ),
+      );
+    } catch {
+      return null;
+    }
+  }
+  return _worker;
+};
+
 // ── Store ──────────────────────────────────────────────────────────
 
-export const useBenchmarkStore = create<BenchmarkStore>(
-  (set, get) => ({
+export const useBenchmarkStore =
+  create<BenchmarkStore>((set, get) => ({
     phase: 'idle',
     selectedScenarioIds: ['steady-state'],
     selectedFormulas: [
@@ -100,7 +108,6 @@ export const useBenchmarkStore = create<BenchmarkStore>(
     result: null,
     multiResults: [],
     error: null,
-    _abortCtrl: null,
 
     setSelectedScenarios: (ids) =>
       set({ selectedScenarioIds: ids }),
@@ -108,7 +115,7 @@ export const useBenchmarkStore = create<BenchmarkStore>(
     toggleScenario: (id) => {
       const current = get().selectedScenarioIds;
       if (current.includes(id)) {
-        if (current.length <= 1) return; // keep ≥1
+        if (current.length <= 1) return;
         set({
           selectedScenarioIds: current.filter(
             (s) => s !== id,
@@ -129,7 +136,9 @@ export const useBenchmarkStore = create<BenchmarkStore>(
       }),
 
     clearAllScenarios: () =>
-      set({ selectedScenarioIds: ['steady-state'] }),
+      set({
+        selectedScenarioIds: ['steady-state'],
+      }),
 
     toggleFormula: (id) => {
       const current = get().selectedFormulas;
@@ -141,17 +150,26 @@ export const useBenchmarkStore = create<BenchmarkStore>(
           ),
         });
       } else {
-        set({ selectedFormulas: [...current, id] });
+        set({
+          selectedFormulas: [...current, id],
+        });
       }
     },
 
     selectAllFormulas: () =>
       set({
-        selectedFormulas: getFormulas().map((f) => f.id),
+        selectedFormulas: getFormulas().map(
+          (f) => f.id,
+        ),
       }),
 
     setReplications: (n) =>
-      set({ replications: Math.max(1, Math.min(200, n)) }),
+      set({
+        replications: Math.max(
+          1,
+          Math.min(200, n),
+        ),
+      }),
 
     run: (config, orgs) => {
       const {
@@ -161,7 +179,9 @@ export const useBenchmarkStore = create<BenchmarkStore>(
       } = get();
       const presets = selectedScenarioIds
         .map((id) =>
-          SCENARIO_PRESETS.find((s) => s.id === id),
+          SCENARIO_PRESETS.find(
+            (s) => s.id === id,
+          ),
         )
         .filter(Boolean) as ScenarioPreset[];
 
@@ -173,8 +193,17 @@ export const useBenchmarkStore = create<BenchmarkStore>(
         return;
       }
 
+      const worker = getWorker();
+      if (!worker) {
+        set({
+          phase: 'error',
+          error: 'Web Worker unavailable',
+        });
+        return;
+      }
+
       const formulas = getFormulas();
-      const abortCtrl = new AbortController();
+
       set({
         phase: 'running',
         progress: 0,
@@ -182,152 +211,183 @@ export const useBenchmarkStore = create<BenchmarkStore>(
         error: null,
         result: null,
         multiResults: [],
-        _abortCtrl: abortCtrl,
       });
 
-      (async () => {
-        try {
-          const allResults: MultiScenarioEntry[] = [];
+      // Build one suite config per preset and
+      // run them sequentially inside the worker
+      // by dispatching one at a time.
+      const allResults: MultiScenarioEntry[] = [];
+      let currentPresetIndex = 0;
 
-          for (
-            let pi = 0;
-            pi < presets.length;
-            pi++
-          ) {
-            const preset = presets[pi];
-
-            // Check cancellation
-            if (abortCtrl.signal.aborted) {
-              throw new DOMException(
-                'Benchmark cancelled',
-                'AbortError',
-              );
-            }
-
-            // Build per-formula scenarios
-            const scenarios = selectedFormulas.map(
-              (fid) => {
-                const formula = formulas.find(
-                  (f) => f.id === fid,
-                );
-                return {
-                  id: fid,
-                  name: formula?.name ?? fid,
-                  config: {
-                    ...config,
-                    formulaType:
-                      fid === 'current_weighted'
-                        ? config.formulaType
-                        : (undefined as CRMQConfig['formulaType']),
-                  },
-                  orgs,
-                  formulaId: fid,
-                };
-              },
-            );
-
-            const suiteConfig: BenchmarkSuiteConfig = {
-              name:
-                `${preset.name} — ` +
-                `${selectedFormulas.length} formulas` +
-                ` × ${replications} runs`,
-              scenarios,
-              workload: {
-                durationSeconds:
-                  preset.workloadConfig.durationSeconds,
-                arrivalPattern:
-                  preset.workloadConfig.arrivalPattern,
-                sizeDistribution:
-                  preset.workloadConfig.sizeDistribution,
-                ttlDefault: config.ttlDefault,
-              },
-              replications,
-              baseSeed: preset.workloadConfig.seed,
-              warmUp: {
-                type: 'fixed',
-                seconds: Math.round(
-                  preset.workloadConfig.durationSeconds *
-                    0.1,
-                ),
-              },
-            };
-
-            // Progress: combine scenario-level + inner
-            const scenarioBase =
-              (pi / presets.length) * 100;
-            const scenarioSpan =
-              (1 / presets.length) * 100;
-
-            const result = await runBenchmarkSuite(
-              suiteConfig,
-              (p) => {
-                const innerPct =
-                  scenarioBase +
-                  (p.pct / 100) * scenarioSpan;
-                set({
-                  progress: Math.round(innerPct),
-                  progressLabel:
-                    `Scenario ${pi + 1}/${presets.length}` +
-                    ` (${preset.name})` +
-                    ` — ${p.phase}` +
-                    ` — formula ${p.scenarioIndex + 1}` +
-                    `/${p.totalScenarios}` +
-                    `, run ${p.replicationIndex + 1}` +
-                    `/${p.totalReplications}`,
-                });
-              },
-              abortCtrl.signal,
-            );
-
-            allResults.push({ preset, result });
-          }
-
-          // If only 1 scenario, also set legacy result
+      const runNextPreset = () => {
+        if (
+          currentPresetIndex >= presets.length
+        ) {
+          // All done
           const singleResult =
             allResults.length === 1
               ? allResults[0].result
               : null;
-
           set({
             phase: 'done',
             progress: 100,
             progressLabel: 'Complete',
             result: singleResult,
             multiResults: allResults,
-            _abortCtrl: null,
           });
-        } catch (err) {
-          if (
-            err instanceof DOMException &&
-            err.name === 'AbortError'
-          ) {
+          return;
+        }
+
+        const preset =
+          presets[currentPresetIndex];
+        const pi = currentPresetIndex;
+
+        const scenarios: SerializableScenarioConfig[] =
+          selectedFormulas.map((fid) => {
+            const formula = formulas.find(
+              (f) => f.id === fid,
+            );
+            return {
+              id: fid,
+              name: formula?.name ?? fid,
+              config: stripConfig({
+                ...config,
+                formulaType:
+                  fid === 'current_weighted'
+                    ? config.formulaType
+                    : (undefined as CRMQConfig['formulaType']),
+              }),
+              orgs,
+              formulaId: fid,
+            };
+          });
+
+        const suite: SerializableSuiteConfig = {
+          name:
+            `${preset.name} — ` +
+            `${selectedFormulas.length}` +
+            ` formulas` +
+            ` × ${replications} runs`,
+          scenarios,
+          workload: {
+            durationSeconds:
+              preset.workloadConfig
+                .durationSeconds,
+            arrivalPattern:
+              preset.workloadConfig
+                .arrivalPattern,
+            sizeDistribution:
+              preset.workloadConfig
+                .sizeDistribution,
+            ttlDefault: config.ttlDefault,
+          },
+          replications,
+          baseSeed:
+            preset.workloadConfig.seed,
+          maxSimTime: undefined,
+          warmUp: {
+            type: 'fixed',
+            seconds: Math.round(
+              preset.workloadConfig
+                .durationSeconds * 0.1,
+            ),
+          },
+        };
+
+        const scenarioBase =
+          (pi / presets.length) * 100;
+        const scenarioSpan =
+          (1 / presets.length) * 100;
+
+        // Wire up worker message handler
+        // for this preset
+        const handler = (
+          ev: MessageEvent<BenchmarkResponse>,
+        ) => {
+          const msg = ev.data;
+
+          if (msg.type === 'progress') {
+            const p = msg.progress;
+            const innerPct =
+              scenarioBase +
+              (p.pct / 100) * scenarioSpan;
             set({
-              phase: 'idle',
-              progress: 0,
-              progressLabel: '',
-              error: null,
-              _abortCtrl: null,
-            });
-          } else {
-            set({
-              phase: 'error',
-              error: String(err),
-              progress: 0,
-              _abortCtrl: null,
+              progress: Math.round(innerPct),
+              progressLabel:
+                `Scenario ` +
+                `${pi + 1}` +
+                `/${presets.length}` +
+                ` (${preset.name})` +
+                ` — ${p.phase}` +
+                ` — formula ` +
+                `${p.scenarioIndex + 1}` +
+                `/${p.totalScenarios}` +
+                `, run ` +
+                `${p.replicationIndex + 1}` +
+                `/${p.totalReplications}`,
             });
           }
-        }
-      })();
+
+          if (msg.type === 'result') {
+            worker.removeEventListener(
+              'message',
+              handler,
+            );
+            allResults.push({
+              preset,
+              result: msg.result,
+            });
+            currentPresetIndex++;
+            runNextPreset();
+          }
+
+          if (msg.type === 'error') {
+            worker.removeEventListener(
+              'message',
+              handler,
+            );
+            if (msg.error === 'AbortError') {
+              set({
+                phase: 'idle',
+                progress: 0,
+                progressLabel: '',
+                error: null,
+              });
+            } else {
+              set({
+                phase: 'error',
+                error: msg.error,
+                progress: 0,
+              });
+            }
+          }
+        };
+
+        worker.addEventListener(
+          'message',
+          handler,
+        );
+        worker.postMessage({
+          type: 'run',
+          suiteConfig: suite,
+        });
+      };
+
+      runNextPreset();
     },
 
     cancel: () => {
-      const ctrl = get()._abortCtrl;
-      if (ctrl) ctrl.abort();
+      const worker = getWorker();
+      if (worker) {
+        worker.postMessage({ type: 'abort' });
+      }
     },
 
     reset: () => {
-      const ctrl = get()._abortCtrl;
-      if (ctrl) ctrl.abort();
+      const worker = getWorker();
+      if (worker) {
+        worker.postMessage({ type: 'abort' });
+      }
       set({
         phase: 'idle',
         progress: 0,
@@ -335,8 +395,12 @@ export const useBenchmarkStore = create<BenchmarkStore>(
         result: null,
         multiResults: [],
         error: null,
-        _abortCtrl: null,
       });
     },
-  }),
-);
+  }));
+
+// Debug: expose store on window for testing
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>)
+    .__benchmarkStore = useBenchmarkStore;
+}

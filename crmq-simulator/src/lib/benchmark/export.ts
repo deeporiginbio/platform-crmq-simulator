@@ -137,7 +137,6 @@ export const exportCSV = (result: BenchmarkSuiteResult, preset?: ScenarioPreset)
     { label: 'Max Wait Time (s)', extract: a => fmtNum(a.maxWaitTime.mean) },
     { label: 'Max Wait Time CI', extract: a => ciTimeStr(a.maxWaitTime) },
     { label: "Jain's Fairness Index", extract: a => fmtNum(a.jainsIndex.mean) },
-    { label: 'Eviction Rate', extract: a => fmtPct(a.evictionRate.mean) },
     { label: 'Wait Time CoV', extract: a => fmtNum(a.coefficientOfVariation.mean) },
   ];
 
@@ -168,7 +167,6 @@ export const exportCSV = (result: BenchmarkSuiteResult, preset?: ScenarioPreset)
         { label: 'Mean Wait Time', test: c.meanWaitTime, winner: c.winners['meanWaitTime'] },
         { label: 'P95 Wait Time', test: c.p95WaitTime, winner: c.winners['p95WaitTime'] },
         { label: "Jain's Fairness", test: c.jainsIndex, winner: c.winners['jainsIndex'] },
-        { label: 'Eviction Rate', test: c.evictionRate, winner: c.winners['evictionRate'] },
       ];
       for (const cm of compMetrics) {
         rows.push([
@@ -313,7 +311,6 @@ export const exportMarkdown = (result: BenchmarkSuiteResult, preset?: ScenarioPr
     { label: 'P99 Wait Time', extract: a => ciTimeStr(a.p99WaitTime) },
     { label: 'Max Wait Time', extract: a => ciTimeStr(a.maxWaitTime) },
     { label: "Jain's Fairness Index", extract: a => ciStr(a.jainsIndex) },
-    { label: 'Eviction Rate', extract: a => ciPctStr(a.evictionRate) },
     { label: 'Wait Time CoV', extract: a => ciStr(a.coefficientOfVariation) },
   ];
 
@@ -380,7 +377,6 @@ export const exportMarkdown = (result: BenchmarkSuiteResult, preset?: ScenarioPr
         { label: 'Mean Wait', test: c.meanWaitTime, winner: c.winners['meanWaitTime'] },
         { label: 'P95 Wait', test: c.p95WaitTime, winner: c.winners['p95WaitTime'] },
         { label: "Jain's FI", test: c.jainsIndex, winner: c.winners['jainsIndex'] },
-        { label: 'Eviction', test: c.evictionRate, winner: c.winners['evictionRate'] },
       ];
       for (const cm of compMetrics) {
         const pStr = cm.test.pValue < 0.001 ? '<0.001' : fmtNum(cm.test.pValue, 4);

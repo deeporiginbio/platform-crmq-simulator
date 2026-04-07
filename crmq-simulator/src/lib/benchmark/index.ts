@@ -18,7 +18,7 @@ export { SeededRandom, generateWorkload, generateArrivalTimes, generateJobSize, 
 export type { GeneratedJob, ArrivalPattern, JobSizeDistribution, WorkloadConfig, ScenarioPreset, MMPPState } from './traffic';
 
 // DES Engine
-export { runDES } from './des-engine';
+export { runDES, runDESAsync } from './des-engine';
 export type { DESConfig, DESResult, ScoringFunction } from './des-engine';
 
 // Statistical rigor
@@ -33,8 +33,16 @@ export type { ScoreFn, ScoringFormula } from './scoring';
 export { runBenchmarkSuite, quickRun } from './runner';
 export type { BenchmarkScenarioConfig, BenchmarkSuiteConfig, ScenarioResult, BenchmarkSuiteResult, ProgressCallback } from './runner';
 
-// Export utilities
+// Export utilities (per-scenario)
 export { exportCSV, exportJSON, exportMarkdown } from './export';
+
+// Consolidated report exports (multi-scenario)
+export {
+  exportPDFReport,
+  exportMarkdownReport,
+  exportJSONReport,
+  exportCSVReport,
+} from './export-report';
 
 // Re-export store types used by components
 export type { MultiScenarioEntry } from '../benchmark-store';
