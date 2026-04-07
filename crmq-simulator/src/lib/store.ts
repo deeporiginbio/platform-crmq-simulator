@@ -53,12 +53,18 @@ const stripForStorage = (cfg: CRMQConfig) => ({
   formulaParams: cfg.formulaParams,
 });
 
-/** Load the last-active config from localStorage */
+/** Load the last-active config from localStorage, migrating legacy defaults */
 const loadActiveConfig = (): { cfg: CRMQConfig; orgs: Org[] } | null => {
   try {
     const raw = localStorage.getItem(ACTIVE_KEY);
     if (!raw) return null;
     const parsed: SerializedActive = JSON.parse(raw);
+    // Migrate: if no formulaType was saved (or it was the old default),
+    // switch to balanced_composite
+    if (!parsed.config.formulaType || parsed.config.formulaType === 'current_weighted') {
+      parsed.config.formulaType = 'balanced_composite';
+      parsed.config.formulaParams = undefined;
+    }
     return {
       cfg: hydrateConfig(parsed.config),
       orgs: parsed.orgs,
