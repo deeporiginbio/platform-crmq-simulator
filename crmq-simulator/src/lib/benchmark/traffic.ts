@@ -413,10 +413,18 @@ export interface ScenarioPreset {
 /**
  * Workload sizing notes:
  *   Default cluster: mason = 1362 usable CPU, mason-gpu = 767 usable CPU / 192 GPU
- *   To hit ~80% CPU utilization with avg 16 CPU jobs at 120s avg duration:
- *     concurrent_slots = 0.8 × 1362 / 16 ≈ 68 concurrent jobs
- *     arrival_rate = 68 / (120/60) = 34 jobs/min
- *   Scenarios are calibrated to create real contention and queuing.
+ *   Org quotas: deeporigin = 1,364 CPU, org-beta = 384, org-gamma = 384
+ *
+ *   For stochastic scenarios, use Little's Law with E[CPU × duration]:
+ *     utilization = λ × E[CPU × duration] / pool_capacity
+ *   (NOT λ × E[CPU] × E[duration] — job size and duration are correlated
+ *    in mixed distributions, so the product matters.)
+ *
+ *   For periodic_mix, concurrent = duration / interval per template:
+ *     demand = concurrent × cpu_per_job, capped by min(org_quota, pool)
+ *
+ *   Formula-testing scenarios use periodic_mix with all orgs under quota
+ *   so the pool is the sole bottleneck and scoring determines dispatch order.
  */
 
 export const SCENARIO_PRESETS: ScenarioPreset[] = [
@@ -811,9 +819,12 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // Gamma: 1800/300 = 6 × 8 = 48 CPU
           { name: 'BG-gamma-8cpu',      orgId: 'org-gamma',  cpu: 8,   memory: 32,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 300,  userPriority: 2, toolPriority: 2 },
         ],
-        // Total running: DO 584 + beta min(404,384) + gamma min(624,384) = ~1,352
-        // Plus bg: 72 + 20 + 48 = 140. Effective ~1,352+ (pool = 1,362).
-        // Both beta and gamma hit quota walls → formula decides who gets scarce slots.
+        // Demand: DO 512+72=584, beta 384+20=404, gamma 576+48=624
+        // Quotas shared per org: beta main alone = 384 (quota full),
+        // gamma main alone = 384 (6×64, quota full).
+        // BG jobs for beta/gamma can only run during brief gaps.
+        // Effective running: DO 584 + beta 384 + gamma 384 = ~1,352
+        // (pool = 1,362). Formula decides cross-org priority.
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 7007,
@@ -937,8 +948,9 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
       arrivalPattern: {
         type: 'mmpp',
         states: [
-          // Max throughput ≈ 1.48 jobs/min for this heavier mix.
-          // Normal operation: 1/min ≈ 67% utilisation
+          // Mixed 60/25/15: E[CPU×dur] ≈ 55,020 CPU-s/job → 917 CPU per
+          // job/min. Saturation at ~1.48 jobs/min (917 × 1.48 ≈ 1,362).
+          // Normal operation: 1/min × 917 = 917 CPU ≈ 67% utilisation
           { label: 'normal', lambdaPerMinute: 1, weight: 0.45 },
           // Failure-recovery burst: 4/min ≈ 270% util — massive
           // spike simulates resubmitted jobs after nodes crash.
@@ -969,8 +981,9 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
       arrivalPattern: {
         type: 'mmpp',
         states: [
-          // Max throughput ≈ 2.1 jobs/min for this mixed distribution.
-          // Night: 0.5/min ≈ 25% utilisation — queue drains
+          // Mixed 65/25/10: E[CPU×dur] ≈ 38,280 CPU-s/job → 638 CPU per
+          // job/min. Saturation at ~2.1 jobs/min (638 × 2.1 ≈ 1,340).
+          // Night: 0.5/min × 638 = 319 CPU ≈ 25% util — queue drains
           { label: 'night',  lambdaPerMinute: 0.5, weight: 0.38 },
           // Day: 1.5/min ≈ 70% util — steady load, slight queuing
           { label: 'day',    lambdaPerMinute: 1.5, weight: 0.42 },
@@ -987,7 +1000,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
   {
     id: 'dominant-tenant',
     name: 'R2: Dominant Tenant',
-    description: 'org-beta submits 70% of all jobs (small), deeporigin 10% (large), org-gamma 20% (medium) — tests fairness when one org dominates submission volume',
+    description: 'org-beta submits ~62% of all jobs (small), deeporigin ~9% (large), org-gamma ~29% (medium) — tests fairness when one org dominates volume while another creates heavy resource contention',
     phase: 5,
     workloadConfig: {
       durationSeconds: 86400,
@@ -998,8 +1011,9 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           { name: 'Beta-small-4cpu',    orgId: 'org-beta',   cpu: 4,   memory: 16,   gpu: 0, durationSeconds: 900,   intervalSeconds: 171,  userPriority: 1, toolPriority: 2 },
           // deeporigin: 10% of 720 = ~72 large jobs (every 1200s = 20m)
           { name: 'DO-large-128cpu',    orgId: 'deeporigin', cpu: 128, memory: 512,  gpu: 0, durationSeconds: 14400, intervalSeconds: 1200, userPriority: 4, toolPriority: 5 },
-          // org-gamma: 20% of 720 = ~144 medium jobs (every 600s = 10m)
-          { name: 'Gamma-medium-32cpu', orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 600,  userPriority: 3, toolPriority: 3 },
+          // org-gamma: ~240 medium jobs (every 360s = 6m)
+          // 3600/360 = 10 × 32 = 320 CPU demand → deeper queue, formula divergence
+          { name: 'Gamma-medium-32cpu', orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360,  userPriority: 3, toolPriority: 3 },
         ],
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
@@ -1039,9 +1053,10 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // GPU pool: org-beta GPU jobs
           { name: 'BG-standalone-gpu',    orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 4, durationSeconds: 3600,  intervalSeconds: 720, userPriority: 2, toolPriority: 2 },
         ],
-        // CPU pool: DO 344 + beta min(480,384) + gamma min(480,384) = ~1,112
-        // With beta & gamma queuing, effective ~1,112 running + queued pressure.
-        // GPU pool: DO 160 CPU + beta 80 CPU = 240 CPU, 80+20 = 100 GPU
+        // CPU pool demand: DO 344, beta 96+640=736, gamma 120+240+120=480
+        // Quotas shared per org: beta capped at 384, gamma capped at 384
+        // Effective running: DO 344 + beta 384 + gamma 384 = ~1,112
+        // GPU pool: DO 80 GPU (10×8), beta 20 GPU (5×4) = 100 GPU
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
       seed: 9003,
@@ -1062,9 +1077,9 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // Stage 1: Prep — every 3 min (20/hr)
           // 900/180 = 5 × 8 = 40 CPU
           { name: 'MolProps-prep-8cpu',    orgId: 'deeporigin', cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 900,   intervalSeconds: 180,  userPriority: 3, toolPriority: 3 },
-          // Stage 2: Compute — every 6 min (10/hr)
-          // 3600/360 = 10 × 32 = 320 CPU
-          { name: 'MolProps-main-32cpu',   orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360,  userPriority: 3, toolPriority: 4 },
+          // Stage 2: Compute — every 4 min (15/hr)
+          // 3600/240 = 15 × 32 = 480 CPU
+          { name: 'MolProps-main-32cpu',   orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 240,  userPriority: 3, toolPriority: 4 },
           // Stage 3: GPU finish — every 12 min (5/hr)
           // 7200/720 = 10 × (16 CPU, 8 GPU) = 160 CPU, 80 GPU
           { name: 'MolProps-gpu-8gpu',     orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720,  userPriority: 3, toolPriority: 5 },
@@ -1081,16 +1096,17 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // Stage 1: Prep — every 3 min
           // 600/180 = 3.3 × 8 = 27 CPU
           { name: 'Analysis-prep-8cpu',    orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 600,   intervalSeconds: 180,  userPriority: 2, toolPriority: 2 },
-          // Stage 2: Main — every 6 min
-          // 1800/360 = 5 × 32 = 160 CPU
-          { name: 'Analysis-main-32cpu',   orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 360,  userPriority: 2, toolPriority: 3 },
+          // Stage 2: Main — every 4 min
+          // 1800/240 = 7.5 × 32 = 240 CPU
+          { name: 'Analysis-main-32cpu',   orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 240,  userPriority: 2, toolPriority: 3 },
 
           // Background standalone jobs (org-gamma)
-          // 1800/120 = 15 × 8 = 120 CPU → gamma total ~307, within 384
-          { name: 'BG-standalone-cpu',     orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 120,  userPriority: 1, toolPriority: 1 },
+          // 1800/90 = 20 × 8 = 160 CPU → gamma total ~427, exceeds 384 quota
+          { name: 'BG-standalone-cpu',     orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 90,   userPriority: 1, toolPriority: 1 },
         ],
-        // CPU pool: DO 360 + beta min(491,384) + gamma 307 = ~1,051 running
-        // Plus queued beta compute jobs creating scoring contention.
+        // CPU pool: DO 520 + beta 384 (quota-capped; 587 demand)
+        // + gamma 384 (quota-capped; 427 demand) = ~1,288 (94.6%).
+        // Both beta and gamma exceed quotas → real queueing.
         // GPU pool: DO 160 CPU, 80 GPU → moderate GPU pressure.
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },

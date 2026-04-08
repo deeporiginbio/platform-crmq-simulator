@@ -36,9 +36,9 @@ const CLUSTER_INFO = {
 
 const DEEP_DIVE: Record<string, string[]> = {
   'steady-state': [
-    'Targets ~80% CPU utilization on the mason pool. Calibration: 30 jobs/min × avg 32 CPU per job = ~960 concurrent CPU-units needed. With 1362 available cores and ~2 min avg duration, this creates sustained but manageable queuing.',
+    'Heavy overload on the mason pool. Calibration: 30 jobs/min × avg 2.25 min duration = ~67.5 concurrent jobs × avg 32 CPU = ~2,160 CPU demand vs 1,362 available — ~159% oversubscription. Creates sustained queuing to stress-test dispatch and drain.',
     'Tests whether the scheduler can maintain high throughput without starving any org. The Poisson arrival process (memoryless property) means job arrivals are realistic and unpredictable.',
-    'Expected behavior: short, steady wait times with good fairness across orgs. Backfilling should keep utilization high. This is the "golden path" scenario — if a formula fails here, it fails everywhere.',
+    'Expected behavior: persistent queue that fluctuates with Poisson variance. Backfilling should keep utilization near 100%. This is a benchmarkOnly infrastructure scenario — it validates dispatch mechanics, not formula differentiation.',
   ],
   'burst-traffic': [
     '200 jobs arrive simultaneously at t=0, saturating the cluster instantly. Total demand: ~200 × avg 40 CPU = ~8,000 CPU-units vs 1,362 available — a 6× oversubscription.',
@@ -101,14 +101,14 @@ const DEEP_DIVE: Record<string, string[]> = {
 
   // Phase 5 — Realistic Production Workloads
   'monday-morning-rush': [
-    'Models real-world usage with a Markov-Modulated Poisson Process (MMPP): night (2/min, 38% of time), regular day (15/min, 42%), and morning peak (30/min, 20%). State transitions every hour create realistic load cycling over 48 hours.',
-    'Night: ~2/min × ~2 min avg × ~20 CPU ≈ 600 CPU demand (~44% util, no queuing). Day: ~15/min creates moderate overload and growing queues. Peak: ~30/min → ~9,000 CPU demand (~7× cluster), creating heavy queuing and contention.',
+    'Models real-world usage with a Markov-Modulated Poisson Process (MMPP): night (0.5/min, 38% of time), regular day (1.5/min, 42%), and morning peak (3/min, 20%). State transitions every hour create realistic load cycling over 48 hours. Mixed 65/25/10 job sizes (E[CPU×dur] ≈ 38,280 CPU-sec/job, max throughput ≈ 2.1 jobs/min).',
+    'Night: 0.5/min ≈ 25% utilization — queue drains freely. Day: 1.5/min ≈ 70% util — steady load with slight queuing. Peak: 3/min ≈ 140% util — queue builds significantly but safely drains during subsequent night phases.',
     'Expected pattern: night-time jobs run freely. Morning peak creates significant queues that partially drain during the regular day period. Day 2 should show similar patterns, validating that the scheduler reaches steady-state behavior across day/night cycles.',
   ],
   'dominant-tenant': [
     'org-beta submits 70% of all jobs (~504 small 4-CPU jobs/day) while deeporigin submits only 10% (~72 large 128-CPU jobs). Despite the volume asymmetry, both orgs contribute similar total CPU-hours: org-beta ≈ 504 × 4 × 0.25h = 504 CPU-hrs, deeporigin ≈ 72 × 128 × 4h = 36,864 CPU-hrs.',
     'Tests whether the org-load term correctly prevents the high-volume submitter from monopolizing queue positions. Without cluster-state awareness, org-beta\'s 504 jobs would crowd out deeporigin\'s 72 despite deeporigin consuming 73× more CPU-hours.',
-    'The org CPU cap (org-beta: 400 CPU) is the primary defense — org-beta can never run more than 100 concurrent 4-CPU jobs. But the formula should also ensure deeporigin\'s large jobs don\'t wait unreasonably just because beta has more queue entries.',
+    'The org CPU cap (org-beta: 384 CPU) is the primary defense — org-beta can never run more than 96 concurrent 4-CPU jobs. But the formula should also ensure deeporigin\'s large jobs don\'t wait unreasonably just because beta has more queue entries.',
   ],
   'mixed-multi-org': [
     'Diverse job types at ~100% cluster utilization. deeporigin: prep (8 CPU, every 5m) + compute (32 CPU, every 6m) + GPU (8 GPU, every 12m). org-beta: prep (16 CPU, every 5m) + compute (64 CPU, every 6m → 640 demand, capped at 384). org-gamma: analysis (16 CPU) + compute (32 CPU) + background (8 CPU) → 480 demand, capped at 384.',
@@ -128,19 +128,20 @@ const DEEP_DIVE: Record<string, string[]> = {
     + 'jobs), then deeporigin submits 128-CPU honest jobs every '
     + '20 min (~6 concurrent = 768 CPU) while org-beta submits '
     + '4-CPU split jobs every 38 s (~384 CPU at quota cap). '
-    + 'Both deliver ~760 CPU-hrs/hr — same work, different '
-    + 'packaging.',
+    + 'deeporigin delivers ~1,300+ CPU-hrs/hr (background + '
+    + 'honest), org-beta delivers ~384 CPU-hrs/hr at quota cap.',
     'Total demand: ~1,792 CPU vs 1,362 cluster. deeporigin '
     + 'alone exceeds its 1,364 quota (640 + 768 = 1,408), so '
     + 'honest 128-CPU jobs queue. org-beta\'s 189 theoretical '
     + 'concurrent jobs are capped to 96 by the 384-CPU quota. '
     + 'Both orgs face real contention at Gate 1 and Gate 2.',
-    'If the formula is fair, both orgs should receive '
-    + 'approximately equal total CPU-hours (±15%). If org-beta '
-    + 'gets significantly more, small jobs game backfill. If '
-    + 'deeporigin gets more, large jobs get unfair reservation '
-    + 'priority. The org-load term should equalize dispatch '
-    + 'rates as each org\'s running load grows.',
+    'Key question: does splitting into many small jobs give '
+    + 'org-beta a disproportionate share relative to its quota? '
+    + 'If org-beta gets significantly more CPU-time than its '
+    + '384-CPU quota share, small jobs game backfill. If '
+    + 'deeporigin\'s large jobs wait unreasonably despite higher '
+    + 'priority, reservation mode may be too aggressive. The '
+    + 'org-load term should keep each org near its quota share.',
   ],
   'priority-inversion-stress': [
     'Three-layer saturation: org-gamma fills 384 CPU (24 × 16-CPU jobs at quota limit), org-beta fills 384 CPU (12 × 32-CPU jobs at quota limit), and deeporigin\'s own background fills ~576 CPU (18 × 32-CPU jobs). Total: ~1,344 of 1,362 CPU occupied — only ~18 CPU free.',
