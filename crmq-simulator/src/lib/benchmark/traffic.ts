@@ -1215,6 +1215,88 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     },
   },
   {
+    id: 'priority-size-inversion',
+    name: 'A3: Priority-Size Inversion',
+    description:
+      'org-gamma (lowest priority) submits 128-CPU '
+      + 'jobs every 8 min while deeporigin (highest '
+      + 'priority) floods small 4-CPU jobs every 8 s '
+      + '— tests whether formulas let high-priority '
+      + 'small jobs flow or large low-priority jobs '
+      + 'starve them via reservation mode',
+    phase: 6,
+    workloadConfig: {
+      durationSeconds: 86400,
+      arrivalPattern: {
+        type: 'periodic_mix',
+        templates: [
+          // deeporigin (prio 3, quota 1364 CPU):
+          // many small 4-CPU jobs, 15 min each,
+          // every 8s.
+          // Concurrent: 900/8 ≈ 113 × 4 = 450 CPU
+          {
+            name: 'DO-small-4cpu',
+            orgId: 'deeporigin',
+            cpu: 4,
+            memory: 16,
+            gpu: 0,
+            durationSeconds: 900,
+            intervalSeconds: 8,
+            userPriority: 4,
+            toolPriority: 4,
+          },
+          // org-gamma (prio 1, quota 384 CPU):
+          // few large 128-CPU jobs, 4h each,
+          // every 8 min. Arrival rate ≈ 30
+          // concurrent, but only 3 fit within
+          // 384-CPU quota → queue of ~27 pending.
+          {
+            name: 'Gamma-large-128cpu',
+            orgId: 'org-gamma',
+            cpu: 128,
+            memory: 512,
+            gpu: 0,
+            durationSeconds: 14400,
+            intervalSeconds: 480,
+            userPriority: 1,
+            toolPriority: 1,
+          },
+          // org-beta (prio 2, quota 384 CPU):
+          // steady medium baseline, 16 CPU,
+          // 1h each, every 90s.
+          // Concurrent: min(40, 24) = 24 × 16
+          // = 384 CPU (quota-limited).
+          {
+            name: 'Beta-medium-16cpu',
+            orgId: 'org-beta',
+            cpu: 16,
+            memory: 64,
+            gpu: 0,
+            durationSeconds: 3600,
+            intervalSeconds: 90,
+            userPriority: 2,
+            toolPriority: 3,
+          },
+        ],
+        // CPU demand: DO 450 + gamma 384 + beta
+        // 384 = 1,218 / 1,362 ≈ 89% utilisation.
+        // Gamma queue builds to ~27 pending
+        // 128-CPU jobs. The key question: do
+        // formulas let DO's 4-CPU jobs flow, or
+        // does gamma's reservation mode block
+        // everything?
+      },
+      sizeDistribution: {
+        type: 'fixed',
+        cpu: 0,
+        memory: 0,
+        gpu: 0,
+        duration: 0,
+      },
+      seed: 10003,
+    },
+  },
+  {
     id: 'starvation-gauntlet',
     name: 'A4: Starvation Gauntlet',
     description: 'Worst-case aging: deeporigin + org-beta saturate cluster continuously, org-gamma submits a single 16-CPU job — tests whether aging guarantees eventual execution',

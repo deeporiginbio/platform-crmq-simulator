@@ -148,6 +148,29 @@ const DEEP_DIVE: Record<string, string[]> = {
     'deeporigin\'s critical 256-CPU job arrives every ~4.8 hours and CANNOT fit. Without reservation mode, freed resources from completing jobs get immediately claimed by new background jobs from all three orgs. The 256-CPU job needs ~8 concurrent completions worth of headroom to dispatch.',
     'Reservation mode must activate: after the critical job is skipped 3+ times, freed resources are reserved (held) rather than given to new dispatches. This allows 256 CPUs to accumulate as jobs complete naturally, then the critical job dispatches. Key metric: how long does the critical job wait?',
   ],
+  'priority-size-inversion': [
+    'deeporigin (priority 3) floods 4-CPU jobs every 8 s '
+    + '— 900 s / 8 s ≈ 113 concurrent × 4 CPU = 450 CPU '
+    + 'steady-state. org-gamma (priority 1) submits '
+    + '128-CPU jobs every 8 min — 14,400 s / 480 s = 30 '
+    + 'concurrent demand, but only 3 fit within its '
+    + '384-CPU quota (3 × 128 = 384). Queue of ~27 '
+    + 'pending 128-CPU jobs builds up.',
+    'org-beta provides a steady medium baseline at '
+    + '16 CPU × 24 concurrent = 384 CPU (quota-limited). '
+    + 'Total cluster demand: 450 + 384 + 384 = 1,218 of '
+    + '1,362 CPU ≈ 89% utilisation. Enough headroom that '
+    + 'DO\'s small jobs should never queue — IF the formula '
+    + 'respects priority over job size.',
+    'The critical test: when gamma\'s 128-CPU job '
+    + 'triggers reservation mode (skipped 3+ times because '
+    + 'cluster has only ~144 CPU free), does the scheduler '
+    + 'block DO\'s small jobs while reserving for gamma? '
+    + 'Good formulas should either (a) deprioritise '
+    + 'low-priority large jobs so reservation triggers '
+    + 'rarely, or (b) allow high-priority backfill around '
+    + 'the reserved job.',
+  ],
   'starvation-gauntlet': [
     'Absolute worst case for starvation: deeporigin streams 128-CPU jobs every 10 minutes (max priority 5/5), org-beta streams 64-CPU jobs every 10 minutes (high priority 4/4). Together they demand 144 × (128 + 64) = 27,648 CPU-units over 24h — far exceeding capacity.',
     'org-gamma submits a SINGLE 16-CPU job at the start with minimum priority (1/1). This job requires only 1.2% of cluster capacity but faces a 5× priority disadvantage and zero queue-position advantage. Without aging, it would never run.',
