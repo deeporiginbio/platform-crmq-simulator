@@ -29,6 +29,12 @@ import {
 } from './types';
 import { createScoreFn } from './benchmark/scoring';
 import { normalizeFormulaType } from './config/formulas/registry';
+import {
+  cpuMillisFromVcpu,
+  memoryMiBFromGb,
+  vcpuFromCpuMillis,
+  gbFromMemoryMiB,
+} from './units';
 
 // ── Default Configuration ────────────────────────────────────────────────────
 
@@ -60,8 +66,18 @@ export const DEFAULT_CONFIG: CRMQConfig = {
         shortLabel: 'CPU',
         color: '#4A65DC',
         quotaType: 'cpu',
-        total: { cpu: 1364, memory: 5457, gpu: 0 },
-        reserved: { cpu: 2, memory: 2, gpu: 0 },
+        // 1,364 vCPU / 5,457 GB
+        total: {
+          cpuMillis: cpuMillisFromVcpu(1364),
+          memoryMiB: memoryMiBFromGb(5457),
+          gpu: 0,
+        },
+        // 2 vCPU / 2 GB reserved for system overhead
+        reserved: {
+          cpuMillis: cpuMillisFromVcpu(2),
+          memoryMiB: memoryMiBFromGb(2),
+          gpu: 0,
+        },
         routeWhen: (job) => job.resources.gpu === 0,
       },
       {
@@ -70,8 +86,18 @@ export const DEFAULT_CONFIG: CRMQConfig = {
         shortLabel: 'GPU',
         color: '#11A468',
         quotaType: 'gpu',
-        total: { cpu: 768, memory: 3072, gpu: 192 },
-        reserved: { cpu: 1, memory: 1, gpu: 0 },
+        // 768 vCPU / 3,072 GB / 192 GPU
+        total: {
+          cpuMillis: cpuMillisFromVcpu(768),
+          memoryMiB: memoryMiBFromGb(3072),
+          gpu: 192,
+        },
+        // 1 vCPU / 1 GB reserved for system overhead
+        reserved: {
+          cpuMillis: cpuMillisFromVcpu(1),
+          memoryMiB: memoryMiBFromGb(1),
+          gpu: 0,
+        },
         routeWhen: (job) => job.resources.gpu > 0,
       },
     ],
@@ -84,69 +110,133 @@ export const DEFAULT_ORGS: Org[] = [
   {
     id: 'deeporigin', name: 'Deeporigin', priority: 3,
     limits: {
-      mason:       { cpu: 1364, memory: 5456, gpu: 0 },
-      'mason-gpu': { cpu: 768,  memory: 3072, gpu: 192 },
+      mason: {
+        cpuMillis: cpuMillisFromVcpu(1364),
+        memoryMiB: memoryMiBFromGb(5456),
+        gpu: 0,
+      },
+      'mason-gpu': {
+        cpuMillis: cpuMillisFromVcpu(768),
+        memoryMiB: memoryMiBFromGb(3072),
+        gpu: 192,
+      },
     },
   },
   {
     id: 'org-beta', name: 'Partner Org', priority: 2,
     limits: {
-      mason:       { cpu: 384, memory: 1536, gpu: 0 },
-      'mason-gpu': { cpu: 192, memory: 768,  gpu: 48 },
+      mason: {
+        cpuMillis: cpuMillisFromVcpu(384),
+        memoryMiB: memoryMiBFromGb(1536),
+        gpu: 0,
+      },
+      'mason-gpu': {
+        cpuMillis: cpuMillisFromVcpu(192),
+        memoryMiB: memoryMiBFromGb(768),
+        gpu: 48,
+      },
     },
   },
   {
     id: 'org-gamma', name: 'Research Lab', priority: 1,
     limits: {
-      mason:       { cpu: 384, memory: 1536, gpu: 0 },
-      'mason-gpu': { cpu: 192, memory: 768,  gpu: 48 },
+      mason: {
+        cpuMillis: cpuMillisFromVcpu(384),
+        memoryMiB: memoryMiBFromGb(1536),
+        gpu: 0,
+      },
+      'mason-gpu': {
+        cpuMillis: cpuMillisFromVcpu(192),
+        memoryMiB: memoryMiBFromGb(768),
+        gpu: 48,
+      },
     },
   },
 ];
 
+/**
+ * Shorthand for PRESET_JOBS: vCPU + GB → canonical Resources (cpuMillis/memoryMiB).
+ * Keeps the fixture table readable in UI units.
+ */
+const res = (vcpu: number, gb: number, gpu: number): Resources => ({
+  cpuMillis: cpuMillisFromVcpu(vcpu),
+  memoryMiB: memoryMiBFromGb(gb),
+  gpu,
+});
+
 export const PRESET_JOBS: Omit<Job, 'id' | 'enqueuedAt' | 'skipCount'>[] = [
-  { name: 'Ligand Prep',         orgId: 'deeporigin', userPriority: 3, toolPriority: 2, resources: { cpu:   4, memory:  16, gpu:  0 }, estimatedDuration:  45, ttl: Infinity },
-  { name: 'GPU Docking (large)', orgId: 'deeporigin', userPriority: 5, toolPriority: 4, resources: { cpu:   8, memory:  32, gpu:  4 }, estimatedDuration: 120, ttl: Infinity },
-  { name: 'Data Ingestion',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: { cpu:   2, memory:   8, gpu:  0 }, estimatedDuration:  30, ttl: Infinity },
-  { name: 'ML Training',         orgId: 'org-beta',   userPriority: 4, toolPriority: 3, resources: { cpu:  16, memory:  64, gpu:  2 }, estimatedDuration: 180, ttl: Infinity },
-  { name: 'API Serving',         orgId: 'org-gamma',  userPriority: 5, toolPriority: 5, resources: { cpu:   4, memory:  16, gpu:  0 }, estimatedDuration:  60, ttl: Infinity },
-  { name: 'Pocket Finding',      orgId: 'org-gamma',  userPriority: 3, toolPriority: 2, resources: { cpu:   8, memory:  32, gpu:  2 }, estimatedDuration:  90, ttl: Infinity },
-  { name: 'Parallel Docking ×4', orgId: 'deeporigin', userPriority: 4, toolPriority: 3, resources: { cpu:  32, memory: 128, gpu:  8 }, estimatedDuration: 200, ttl: Infinity },
-  { name: 'Quick Analysis',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: { cpu:   2, memory:   4, gpu:  0 }, estimatedDuration:  15, ttl: Infinity },
+  { name: 'Ligand Prep',         orgId: 'deeporigin', userPriority: 3, toolPriority: 2, resources: res(  4,  16, 0), estimatedDuration:  45, ttl: Infinity },
+  { name: 'GPU Docking (large)', orgId: 'deeporigin', userPriority: 5, toolPriority: 4, resources: res(  8,  32, 4), estimatedDuration: 120, ttl: Infinity },
+  { name: 'Data Ingestion',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: res(  2,   8, 0), estimatedDuration:  30, ttl: Infinity },
+  { name: 'ML Training',         orgId: 'org-beta',   userPriority: 4, toolPriority: 3, resources: res( 16,  64, 2), estimatedDuration: 180, ttl: Infinity },
+  { name: 'API Serving',         orgId: 'org-gamma',  userPriority: 5, toolPriority: 5, resources: res(  4,  16, 0), estimatedDuration:  60, ttl: Infinity },
+  { name: 'Pocket Finding',      orgId: 'org-gamma',  userPriority: 3, toolPriority: 2, resources: res(  8,  32, 2), estimatedDuration:  90, ttl: Infinity },
+  { name: 'Parallel Docking ×4', orgId: 'deeporigin', userPriority: 4, toolPriority: 3, resources: res( 32, 128, 8), estimatedDuration: 200, ttl: Infinity },
+  { name: 'Quick Analysis',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: res(  2,   4, 0), estimatedDuration:  15, ttl: Infinity },
 ];
 
 
 // ── Resource Math ────────────────────────────────────────────────────────────
 
-export const ZERO: Readonly<Resources> = Object.freeze({ cpu: 0, memory: 0, gpu: 0 });
+export const ZERO: Readonly<Resources> = Object.freeze({
+  cpuMillis: 0,
+  memoryMiB: 0,
+  gpu: 0,
+});
+
+/**
+ * Sentinel "effectively no limit" value used when an org has no quota row
+ * for a given pool. Large but finite so arithmetic stays safe.
+ */
+export const UNLIMITED_RES: Readonly<Resources> = Object.freeze({
+  cpuMillis: Number.MAX_SAFE_INTEGER,
+  memoryMiB: Number.MAX_SAFE_INTEGER,
+  gpu: Number.MAX_SAFE_INTEGER,
+});
 
 /** Build a frozen zero-usage record for the given config's pools */
-export const buildZeroPoolUsage = (config: CRMQConfig): Readonly<Record<string, Resources>> => {
+export const buildZeroPoolUsage = (
+  config: CRMQConfig,
+): Readonly<Record<string, Resources>> => {
   const result: Record<string, Resources> = {};
   for (const pool of config.cluster.pools) {
-    result[pool.type] = Object.freeze({ cpu: 0, memory: 0, gpu: 0 });
+    result[pool.type] = Object.freeze({ cpuMillis: 0, memoryMiB: 0, gpu: 0 });
   }
   return Object.freeze(result);
 };
 
 export const add3 = (a: Resources, b: Resources): Resources => {
-  return { cpu: a.cpu + b.cpu, memory: a.memory + b.memory, gpu: a.gpu + b.gpu };
+  return {
+    cpuMillis: a.cpuMillis + b.cpuMillis,
+    memoryMiB: a.memoryMiB + b.memoryMiB,
+    gpu: a.gpu + b.gpu,
+  };
 };
 
 export const sub3 = (a: Resources, b: Resources): Resources => {
-  return { cpu: a.cpu - b.cpu, memory: a.memory - b.memory, gpu: a.gpu - b.gpu };
+  return {
+    cpuMillis: a.cpuMillis - b.cpuMillis,
+    memoryMiB: a.memoryMiB - b.memoryMiB,
+    gpu: a.gpu - b.gpu,
+  };
 };
 
 export const fits = (req: Resources, avail: Resources): boolean => {
-  return req.cpu <= avail.cpu && req.memory <= avail.memory && req.gpu <= avail.gpu;
+  return (
+    req.cpuMillis <= avail.cpuMillis &&
+    req.memoryMiB <= avail.memoryMiB &&
+    req.gpu <= avail.gpu
+  );
 };
 
-export const sumResources = (jobs: Array<{ resources: Resources }>): Resources => {
+export const sumResources = (
+  jobs: Array<{ resources: Resources }>,
+): Resources => {
   return jobs.reduce<Resources>((acc, j) => add3(acc, j.resources), { ...ZERO });
 };
 
 export const cloneZero = (): Resources => {
-  return { cpu: 0, memory: 0, gpu: 0 };
+  return { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
 };
 
 /** Create a mutable zero per-pool usage record from config */
@@ -349,15 +439,15 @@ export const runScheduler = (
 
     const org = orgs.find(o => o.id === job.orgId);
     const poolType = getJobPoolType(job, config);
-    const orgPoolLimits = org?.limits[poolType] ?? { cpu: 9999, memory: 9999, gpu: 9999 };
+    const orgPoolLimits = org?.limits[poolType] ?? UNLIMITED_RES;
     const orgPools = no[job.orgId] ?? zeroPoolUsage(config);
     const orgUsedInPool = orgPools[poolType] ?? cloneZero();
 
     // Gate 1: Org Quota (per-pool)
     const orgOk = (
-      orgUsedInPool.cpu    + job.resources.cpu    <= orgPoolLimits.cpu    &&
-      orgUsedInPool.memory + job.resources.memory <= orgPoolLimits.memory &&
-      orgUsedInPool.gpu    + job.resources.gpu    <= orgPoolLimits.gpu
+      orgUsedInPool.cpuMillis + job.resources.cpuMillis <= orgPoolLimits.cpuMillis &&
+      orgUsedInPool.memoryMiB + job.resources.memoryMiB <= orgPoolLimits.memoryMiB &&
+      orgUsedInPool.gpu       + job.resources.gpu       <= orgPoolLimits.gpu
     );
     if (!orgOk) {
       logFn?.(now, `⛔ Gate 1 FAIL | ${job.name} [${job.id}] — ${org?.name ?? job.orgId} ${poolType} quota exceeded (SKIP)`, 'warn');
@@ -414,11 +504,11 @@ export const runScheduler = (
           const bfOrgPools = no[bf.orgId] ?? zeroPoolUsage(config);
           const bfOrgUsedInPool = bfOrgPools[bf_poolType] ?? cloneZero();
           const bfOrg = orgs.find(o => o.id === bf.orgId);
-          const bfLimits = bfOrg?.limits[bf_poolType] ?? { cpu: 9999, memory: 9999, gpu: 9999 };
+          const bfLimits = bfOrg?.limits[bf_poolType] ?? UNLIMITED_RES;
           const bfOrgOk = (
-            bfOrgUsedInPool.cpu    + bf.resources.cpu    <= bfLimits.cpu    &&
-            bfOrgUsedInPool.memory + bf.resources.memory <= bfLimits.memory &&
-            bfOrgUsedInPool.gpu    + bf.resources.gpu    <= bfLimits.gpu
+            bfOrgUsedInPool.cpuMillis + bf.resources.cpuMillis <= bfLimits.cpuMillis &&
+            bfOrgUsedInPool.memoryMiB + bf.resources.memoryMiB <= bfLimits.memoryMiB &&
+            bfOrgUsedInPool.gpu       + bf.resources.gpu       <= bfLimits.gpu
           );
           if (bfOrgOk) {
             na = [...na, { ...bf, startedAt: now, remainingDuration: bf.estimatedDuration }];
@@ -438,7 +528,10 @@ export const runScheduler = (
 
     // ✅ DISPATCH
     const wait = now - job.enqueuedAt;
-    logFn?.(now, `✅ DISPATCH | ${job.name} [${job.id}] → ${poolType} — score=${Math.round(job._score).toLocaleString()}, wait=${fmtTime(wait)}, CPU:${job.resources.cpu} MEM:${job.resources.memory}GB GPU:${job.resources.gpu}`, 'success');
+    // Log in UI units (vCPU + GB) — model uses cpuMillis + memoryMiB internally.
+    const vcpu = vcpuFromCpuMillis(job.resources.cpuMillis);
+    const gb = gbFromMemoryMiB(job.resources.memoryMiB);
+    logFn?.(now, `✅ DISPATCH | ${job.name} [${job.id}] → ${poolType} — score=${Math.round(job._score).toLocaleString()}, wait=${fmtTime(wait)}, CPU:${vcpu} MEM:${gb}GB GPU:${job.resources.gpu}`, 'success');
 
     na = [...na, { ...job, startedAt: now, remainingDuration: job.estimatedDuration }];
     nq = nq.filter(j => j.id !== job.id);

@@ -6,7 +6,14 @@ import { useState, useMemo } from 'react';
 import { Badge, Box, Group, NumberInput, Stack, Text, UnstyledButton } from '@mantine/core';
 import type { Resources, Org, QuotaType } from '@/lib/types';
 import type { FormulaType, LimitMode, LimitValue, OrgQuotaConfig } from '@/lib/config/types';
-import { MEMORY_PER_CPU, CPU_PER_GPU, getUserValue, getQuotaLabel, deriveResources } from '@/lib/config/types';
+import {
+  MEMORY_GB_PER_VCPU,
+  VCPU_PER_GPU,
+  getUserValue,
+  getQuotaLabel,
+  deriveResources,
+} from '@/lib/config/types';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 import { getFormula } from '@/lib/config/formulas/registry';
 import { LIMIT_LIST } from '@/lib/config/limits/registry';
 import classes from './org-quotas-step.module.css';
@@ -60,8 +67,12 @@ const DerivedPreview = ({ quotaType, resources }: { quotaType: QuotaType; resour
     return (
       <Group gap="sm">
         <Text size="xs" c="dimmed">Derived:</Text>
-        <Badge size="sm" variant="light" color="grey" radius="sm">CPU: {resources.cpu}</Badge>
-        <Badge size="sm" variant="light" color="grey" radius="sm">Mem: {resources.memory} GB</Badge>
+        <Badge size="sm" variant="light" color="grey" radius="sm">
+          CPU: {vcpuFromCpuMillis(resources.cpuMillis)}
+        </Badge>
+        <Badge size="sm" variant="light" color="grey" radius="sm">
+          Mem: {gbFromMemoryMiB(resources.memoryMiB)} GB
+        </Badge>
       </Group>
     );
   }
@@ -69,7 +80,9 @@ const DerivedPreview = ({ quotaType, resources }: { quotaType: QuotaType; resour
   return (
     <Group gap="sm">
       <Text size="xs" c="dimmed">Derived:</Text>
-      <Badge size="sm" variant="light" color="grey" radius="sm">Mem: {resources.memory} GB</Badge>
+      <Badge size="sm" variant="light" color="grey" radius="sm">
+        Mem: {gbFromMemoryMiB(resources.memoryMiB)} GB
+      </Badge>
     </Group>
   );
 };
@@ -121,7 +134,7 @@ const PercentageLimitForm = ({
   onSetPctQuota: (pctValue: number) => void;
 }) => {
   const label = getQuotaLabel(quotaType);
-  const currentPct = quotaType === 'gpu' ? pct.gpu : pct.cpu;
+  const currentPct = quotaType === 'gpu' ? pct.gpu : pct.cpuMillis;
   const primaryTotal = getUserValue(quotaType, poolTotal);
   const resolvedPrimary = Math.round(primaryTotal * currentPct / 100);
   const derived = deriveResources(quotaType, resolvedPrimary);
@@ -256,7 +269,10 @@ const OrgQuotaCard = ({
               const label = getQuotaLabel(p.quotaType);
               if (!lim) return `${p.shortLabel}: ?`;
               if (lim.mode === 'uncapped') return `${p.shortLabel}: ∞`;
-              if (lim.mode === 'percentage') return `${p.shortLabel}: ${p.quotaType === 'gpu' ? lim.pct.gpu : lim.pct.cpu}% ${label}`;
+              if (lim.mode === 'percentage') {
+                const pctVal = p.quotaType === 'gpu' ? lim.pct.gpu : lim.pct.cpuMillis;
+                return `${p.shortLabel}: ${pctVal}% ${label}`;
+              }
               return `${p.shortLabel}: ${getUserValue(p.quotaType, lim.resources)} ${label}`;
             }).join(' · ')}
           </Text>
@@ -314,8 +330,10 @@ export const OrgQuotasStep = ({
           Per-Organization Resource Limits
         </Text>
         <Text size="xs" c="dimmed" mt={2}>
-          Configure the primary resource per pool. CPU pools: set CPU (memory derived at {MEMORY_PER_CPU} GB/CPU).
-          GPU pools: set GPU (CPU derived at {CPU_PER_GPU} CPU/GPU, memory derived).
+          Configure the primary resource per pool. CPU pools: set CPU (memory
+          derived at {MEMORY_GB_PER_VCPU} GB/CPU).
+          GPU pools: set GPU (CPU derived at {VCPU_PER_GPU} CPU/GPU, memory
+          derived).
         </Text>
       </Box>
 

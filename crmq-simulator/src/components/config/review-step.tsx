@@ -6,7 +6,8 @@ import { useMemo } from 'react';
 import { Alert, Badge, Box, Group, Stack, Table, Text } from '@mantine/core';
 import type { Org, Resources } from '@/lib/types';
 import type { SchedulingPolicyConfig, ValidationMessage } from '@/lib/config/types';
-import { MEMORY_PER_CPU, CPU_PER_GPU, getQuotaLabel } from '@/lib/config/types';
+import { MEMORY_GB_PER_VCPU, VCPU_PER_GPU, getQuotaLabel } from '@/lib/config/types';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 import { getFormula } from '@/lib/config/formulas/registry';
 import { resolveAllLimits } from '@/lib/config/use-config-validation';
 import classes from './review-step.module.css';
@@ -88,16 +89,18 @@ export const ReviewStep = ({ config, orgs, errors, warnings }: ReviewStepProps) 
           Resolved Org Limits (Effective Absolute Values)
         </Text>
         <Text size="xs" c="dimmed" mb="sm">
-          CPU pools: user sets CPU, memory derived ({MEMORY_PER_CPU} GB/CPU), no GPU.
-          GPU pools: user sets GPU, CPU derived ({CPU_PER_GPU} CPU/GPU), memory derived.
+          CPU pools: user sets CPU, memory derived ({MEMORY_GB_PER_VCPU} GB/CPU), no
+          GPU.
+          GPU pools: user sets GPU, CPU derived ({VCPU_PER_GPU} CPU/GPU), memory
+          derived.
         </Text>
 
         {config.cluster.pools.map((pool) => {
           const isCpuPool = pool.quotaType === 'cpu';
           const primaryLabel = getQuotaLabel(pool.quotaType);
           const capacityParts = isCpuPool
-            ? `${fmtResource(pool.total.cpu)} CPU, ${fmtResource(pool.total.memory)} GB`
-            : `${fmtResource(pool.total.gpu)} GPU, ${fmtResource(pool.total.cpu)} CPU, ${fmtResource(pool.total.memory)} GB`;
+            ? `${fmtResource(vcpuFromCpuMillis(pool.total.cpuMillis))} CPU, ${fmtResource(gbFromMemoryMiB(pool.total.memoryMiB))} GB`
+            : `${fmtResource(pool.total.gpu)} GPU, ${fmtResource(vcpuFromCpuMillis(pool.total.cpuMillis))} CPU, ${fmtResource(gbFromMemoryMiB(pool.total.memoryMiB))} GB`;
 
           return (
           <Box key={pool.type} mb="md">
@@ -124,9 +127,15 @@ export const ReviewStep = ({ config, orgs, errors, warnings }: ReviewStepProps) 
                 {config.orgQuotas.map((oq) => {
                   const org = orgs.find(o => o.id === oq.orgId);
                   const limit = oq.limits[pool.type];
-                  const resolved = resolvedLimits[oq.orgId]?.[pool.type] ?? { cpu: 0, memory: 0, gpu: 0 };
+                  const resolved = resolvedLimits[oq.orgId]?.[pool.type] ?? {
+                    cpuMillis: 0,
+                    memoryMiB: 0,
+                    gpu: 0,
+                  };
                   const modeBadgeColor = limit?.mode === 'uncapped' ? 'green' : limit?.mode === 'percentage' ? 'blue' : 'grey';
-                  const primaryValue = isCpuPool ? resolved.cpu : resolved.gpu;
+                  const primaryValue = isCpuPool
+                    ? vcpuFromCpuMillis(resolved.cpuMillis)
+                    : resolved.gpu;
 
                   return (
                     <Table.Tr key={oq.orgId}>
@@ -145,12 +154,26 @@ export const ReviewStep = ({ config, orgs, errors, warnings }: ReviewStepProps) 
                         {fmtResource(primaryValue)}
                       </Table.Td>
                       {!isCpuPool && (
-                        <Table.Td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 12, color: 'var(--mantine-color-dimmed)' }}>
-                          {fmtResource(resolved.cpu)}
+                        <Table.Td
+                          style={{
+                            textAlign: 'right',
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            color: 'var(--mantine-color-dimmed)',
+                          }}
+                        >
+                          {fmtResource(vcpuFromCpuMillis(resolved.cpuMillis))}
                         </Table.Td>
                       )}
-                      <Table.Td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 12, color: 'var(--mantine-color-dimmed)' }}>
-                        {fmtResource(resolved.memory)}
+                      <Table.Td
+                        style={{
+                          textAlign: 'right',
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          color: 'var(--mantine-color-dimmed)',
+                        }}
+                      >
+                        {fmtResource(gbFromMemoryMiB(resolved.memoryMiB))}
                       </Table.Td>
                       {!isCpuPool && (
                         <Table.Td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 12, color: 'var(--mantine-color-dimmed)' }}>

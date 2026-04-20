@@ -13,15 +13,18 @@ import type { LimitDefinition, LimitMode } from '../types';
 
 // ── Schemas ─────────────────────────────────────────────────────────────────
 
+// Absolute schema uses canonical model units (cpuMillis, memoryMiB). UI
+// components convert at the boundary via src/lib/units.ts helpers.
 const resourcesSchema = z.object({
-  cpu: z.number().min(0),
-  memory: z.number().min(0),
+  cpuMillis: z.number().min(0),
+  memoryMiB: z.number().min(0),
   gpu: z.number().min(0),
 });
 
+// Percentage schema values are plain percentages [0, 100] — unit-agnostic.
 const percentageSchema = z.object({
-  cpu: z.number().min(0).max(100),
-  memory: z.number().min(0).max(100),
+  cpuMillis: z.number().min(0).max(100),
+  memoryMiB: z.number().min(0).max(100),
   gpu: z.number().min(0).max(100),
 });
 
@@ -33,7 +36,7 @@ const absoluteLimit: LimitDefinition<{ resources: Resources }> = {
   description: 'Fixed resource limits (e.g., 100 CPUs, 256 GB memory)',
   icon: '#️⃣',
   schema: z.object({ resources: resourcesSchema }),
-  defaultValue: { resources: { cpu: 0, memory: 0, gpu: 0 } },
+  defaultValue: { resources: { cpuMillis: 0, memoryMiB: 0, gpu: 0 } },
   resolve: (value) => value.resources,
 };
 
@@ -43,10 +46,10 @@ const percentageLimit: LimitDefinition<{ pct: Resources }> = {
   description: 'Percentage of total pool capacity (e.g., 25% of CPU pool)',
   icon: '%',
   schema: z.object({ pct: percentageSchema }),
-  defaultValue: { pct: { cpu: 100, memory: 100, gpu: 100 } },
+  defaultValue: { pct: { cpuMillis: 100, memoryMiB: 100, gpu: 100 } },
   resolve: (value, poolTotal) => ({
-    cpu: Math.round(poolTotal.cpu * value.pct.cpu / 100),
-    memory: Math.round(poolTotal.memory * value.pct.memory / 100),
+    cpuMillis: Math.round(poolTotal.cpuMillis * value.pct.cpuMillis / 100),
+    memoryMiB: Math.round(poolTotal.memoryMiB * value.pct.memoryMiB / 100),
     gpu: Math.round(poolTotal.gpu * value.pct.gpu / 100),
   }),
 };
@@ -59,8 +62,8 @@ const uncappedLimit: LimitDefinition<Record<string, never>> = {
   schema: z.object({}),
   defaultValue: {},
   resolve: (_value, poolTotal) => ({
-    cpu: poolTotal.cpu,
-    memory: poolTotal.memory,
+    cpuMillis: poolTotal.cpuMillis,
+    memoryMiB: poolTotal.memoryMiB,
     gpu: poolTotal.gpu,
   }),
 };

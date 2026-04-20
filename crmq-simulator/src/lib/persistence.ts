@@ -154,11 +154,37 @@ export const hydrateConfig = (raw: SerializableConfig): CRMQConfig => ({
 
 // ── Generic localStorage CRUD ───────────────────────────────────────────────
 
+/**
+ * Detect persisted state from the pre-unit-rename era (`cpu`/`memory` on
+ * Resources). Post-rename payloads always emit `cpuMillis` / `memoryMiB`
+ * somewhere, so the presence of either of those keys is the "new-era"
+ * signal. Absence of both plus a raw `"cpu":<num>` or `"memory":<num>`
+ * marker means the blob predates the migration and must be dropped to
+ * avoid NaNs/undefined when the hydrator hits it.
+ */
+const isLegacyPersisted = (raw: string): boolean => {
+  if (raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"')) return false;
+  return /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw);
+};
+
 const readList = <T>(key: string): T[] => {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    if (isLegacyPersisted(raw)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[crmq] Dropping legacy persisted state at "${key}" ` +
+        `(pre unit-rename; no cpuMillis/memoryMiB keys).`,
+      );
+      localStorage.removeItem(key);
+      return [];
+    }
+    return JSON.parse(raw);
   } catch {
+    // eslint-disable-next-line no-console
+    console.warn(`[crmq] Failed to parse persisted state at "${key}"; clearing.`);
+    try { localStorage.removeItem(key); } catch { /* ignore */ }
     return [];
   }
 };

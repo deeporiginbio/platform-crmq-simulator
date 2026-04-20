@@ -5,6 +5,10 @@
 import { useState } from 'react';
 import { Box, Button, Group, SimpleGrid, Stack, Text } from '@mantine/core';
 import type { Job, Org, CRMQConfig } from '@/lib/types';
+import {
+  cpuMillisFromVcpu,
+  memoryMiBFromGb,
+} from '@/lib/units';
 import classes from './add-job-modal.module.css';
 
 interface AddJobModalProps {
@@ -86,9 +90,17 @@ export const AddJobModal = ({ cfg, orgs, onAdd, onClose }: AddJobModalProps) => 
             <Button
               onClick={() => {
                 onAdd({
-                  name: f.name, orgId: f.orgId, userPriority: f.userPriority, toolPriority: f.toolPriority,
-                  resources: { cpu: f.cpu, memory: f.memory, gpu: f.gpu },
-                  estimatedDuration: f.estimatedDuration, ttl: f.ttl,
+                  name: f.name,
+                  orgId: f.orgId,
+                  userPriority: f.userPriority,
+                  toolPriority: f.toolPriority,
+                  resources: {
+                    cpuMillis: cpuMillisFromVcpu(f.cpu),
+                    memoryMiB: memoryMiBFromGb(f.memory),
+                    gpu: f.gpu,
+                  },
+                  estimatedDuration: f.estimatedDuration,
+                  ttl: f.ttl,
                 });
                 onClose();
               }}

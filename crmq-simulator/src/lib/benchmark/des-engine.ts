@@ -38,6 +38,7 @@ import {
   cloneZero,
   shallowCloneOrgUsage,
 } from '../scheduler';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
 import type { GeneratedJob } from './traffic';
 import type { JobEvent, UtilizationSample } from './metrics';
 
@@ -224,13 +225,12 @@ const initContext = (
     {};
   for (const pool of config.cluster.pools) {
     freeByPool[pool.type] = {
-      cpu:
-        pool.total.cpu - pool.reserved.cpu,
-      memory:
-        pool.total.memory -
-        pool.reserved.memory,
-      gpu:
-        pool.total.gpu - pool.reserved.gpu,
+      cpuMillis:
+        pool.total.cpuMillis - pool.reserved.cpuMillis,
+      memoryMiB:
+        pool.total.memoryMiB -
+        pool.reserved.memoryMiB,
+      gpu: pool.total.gpu - pool.reserved.gpu,
     };
   }
 
@@ -289,18 +289,18 @@ const sampleUtilization = (ctx: DESContext) => {
     );
     const used = poolJobs.reduce<Resources>(
       (acc, j) => ({
-        cpu: acc.cpu + j.resources.cpu,
-        memory: acc.memory + j.resources.memory,
+        cpuMillis: acc.cpuMillis + j.resources.cpuMillis,
+        memoryMiB: acc.memoryMiB + j.resources.memoryMiB,
         gpu: acc.gpu + j.resources.gpu,
       }),
-      { cpu: 0, memory: 0, gpu: 0 },
+      { cpuMillis: 0, memoryMiB: 0, gpu: 0 },
     );
     pools[pool.type] = {
       used,
       total: {
-        cpu: pool.total.cpu - pool.reserved.cpu,
-        memory:
-          pool.total.memory - pool.reserved.memory,
+        cpuMillis: pool.total.cpuMillis - pool.reserved.cpuMillis,
+        memoryMiB:
+          pool.total.memoryMiB - pool.reserved.memoryMiB,
         gpu: pool.total.gpu - pool.reserved.gpu,
       },
     };
@@ -408,17 +408,17 @@ const applyEvent = (
       if (orgPools?.[poolType]) {
         const p = orgPools[poolType];
         orgPools[poolType] = {
-          cpu: p.cpu - job.resources.cpu,
-          memory:
-            p.memory - job.resources.memory,
+          cpuMillis: p.cpuMillis - job.resources.cpuMillis,
+          memoryMiB:
+            p.memoryMiB - job.resources.memoryMiB,
           gpu: p.gpu - job.resources.gpu,
         };
       }
       // Update incremental free pool
       const fp = state.freeByPool[poolType];
       if (fp) {
-        fp.cpu += job.resources.cpu;
-        fp.memory += job.resources.memory;
+        fp.cpuMillis += job.resources.cpuMillis;
+        fp.memoryMiB += job.resources.memoryMiB;
         fp.gpu += job.resources.gpu;
       }
       const ev = jobEvents.get(jobId);
@@ -477,8 +477,8 @@ const hasAnyCapacityFast = (
   for (const pt in freeByPool) {
     const f = freeByPool[pt];
     if (
-      f.cpu >= minJobRes.cpu &&
-      f.memory >= minJobRes.memory &&
+      f.cpuMillis >= minJobRes.cpuMillis &&
+      f.memoryMiB >= minJobRes.memoryMiB &&
       f.gpu >= minJobRes.gpu
     )
       return true;
@@ -665,8 +665,8 @@ const desBulkDispatch = (
     );
     const orgLimits =
       org?.limits[poolType] ?? {
-        cpu: 9999,
-        memory: 9999,
+        cpuMillis: 9999000,
+        memoryMiB: 9999000,
         gpu: 9999,
       };
     const orgPools =
@@ -676,11 +676,11 @@ const desBulkDispatch = (
       orgPools[poolType] ?? cloneZero();
 
     const orgOk =
-      orgUsedInPool.cpu + job.resources.cpu <=
-        orgLimits.cpu &&
-      orgUsedInPool.memory +
-        job.resources.memory <=
-        orgLimits.memory &&
+      orgUsedInPool.cpuMillis + job.resources.cpuMillis <=
+        orgLimits.cpuMillis &&
+      orgUsedInPool.memoryMiB +
+        job.resources.memoryMiB <=
+        orgLimits.memoryMiB &&
       orgUsedInPool.gpu + job.resources.gpu <=
         orgLimits.gpu;
     if (!orgOk) continue;
@@ -751,16 +751,16 @@ const desBulkDispatch = (
           );
           const bfLimits =
             bfOrg?.limits[bfPool] ?? {
-              cpu: 9999,
-              memory: 9999,
+              cpuMillis: 9999000,
+              memoryMiB: 9999000,
               gpu: 9999,
             };
           if (
-            bfOrgUsed.cpu + bf.resources.cpu >
-              bfLimits.cpu ||
-            bfOrgUsed.memory +
-              bf.resources.memory >
-              bfLimits.memory ||
+            bfOrgUsed.cpuMillis + bf.resources.cpuMillis >
+              bfLimits.cpuMillis ||
+            bfOrgUsed.memoryMiB +
+              bf.resources.memoryMiB >
+              bfLimits.memoryMiB ||
             bfOrgUsed.gpu + bf.resources.gpu >
               bfLimits.gpu
           )
@@ -847,8 +847,8 @@ const desBulkDispatch = (
       const pt = getJobPoolType(j, config);
       const fp = state.freeByPool[pt];
       if (fp) {
-        fp.cpu -= j.resources.cpu;
-        fp.memory -= j.resources.memory;
+        fp.cpuMillis -= j.resources.cpuMillis;
+        fp.memoryMiB -= j.resources.memoryMiB;
         fp.gpu -= j.resources.gpu;
       }
       eq.push({
@@ -924,8 +924,8 @@ const processBatch = (
   // Uses incremental freeByPool — O(pools).
   if (!capacityFreed) {
     const minRes: Resources = {
-      cpu: 1,
-      memory: 1,
+      cpuMillis: 1000,
+      memoryMiB: 1024,
       gpu: 0,
     };
     if (
@@ -1007,16 +1007,16 @@ const drainRemaining = (ctx: DESContext) => {
       if (orgPools?.[poolType]) {
         const p = orgPools[poolType];
         orgPools[poolType] = {
-          cpu: p.cpu - job.resources.cpu,
-          memory:
-            p.memory - job.resources.memory,
+          cpuMillis: p.cpuMillis - job.resources.cpuMillis,
+          memoryMiB:
+            p.memoryMiB - job.resources.memoryMiB,
           gpu: p.gpu - job.resources.gpu,
         };
       }
       const fp = state.freeByPool[poolType];
       if (fp) {
-        fp.cpu += job.resources.cpu;
-        fp.memory += job.resources.memory;
+        fp.cpuMillis += job.resources.cpuMillis;
+        fp.memoryMiB += job.resources.memoryMiB;
         fp.gpu += job.resources.gpu;
       }
       const ev = jobEvents.get(jobId);

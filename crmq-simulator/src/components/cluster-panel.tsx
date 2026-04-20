@@ -5,6 +5,7 @@
 import { memo, useState } from 'react';
 import { Box, Group, SimpleGrid, Stack, Text, UnstyledButton } from '@mantine/core';
 import type { Resources } from '@/lib/types';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 import classes from './cluster-panel.module.css';
 
 interface PoolDisplayData {
@@ -71,8 +72,15 @@ export const ClusterPanel = memo(({ pools }: ClusterPanelProps) => {
         <Text className={classes.sectionTitle}>Cluster Resources</Text>
         {pools.map((pool) => {
           const isCollapsed = collapsed[pool.label] ?? true;
-          const totalUtil = pool.total.cpu > 0
-            ? Math.round(((pool.inUse.cpu + pool.reserved.cpu) / pool.total.cpu) * 100)
+          const totalUtilNum = vcpuFromCpuMillis(pool.total.cpuMillis);
+          const totalUtil = totalUtilNum > 0
+            ? Math.round(
+                (
+                  (vcpuFromCpuMillis(pool.inUse.cpuMillis) +
+                    vcpuFromCpuMillis(pool.reserved.cpuMillis)) /
+                  totalUtilNum
+                ) * 100
+              )
             : 0;
 
           return (
@@ -90,8 +98,11 @@ export const ClusterPanel = memo(({ pools }: ClusterPanelProps) => {
                   </Group>
                   {isCollapsed && (
                     <Text size="xs" ff="monospace" c="dimmed" ml={18}>
-                      {totalUtil}% util · {pool.avail.cpu} CPU free
-                      {pool.total.gpu > 0 ? ` · ${pool.avail.gpu} GPU free` : ''}
+                      {totalUtil}% util · {vcpuFromCpuMillis(pool.avail.cpuMillis)} CPU
+                      free
+                      {pool.total.gpu > 0
+                        ? ` · ${pool.avail.gpu} GPU free`
+                        : ''}
                     </Text>
                   )}
                 </Stack>
@@ -99,14 +110,35 @@ export const ClusterPanel = memo(({ pools }: ClusterPanelProps) => {
 
               {!isCollapsed && (
                 <Stack gap="sm" mt="xs">
-                  <ResBar label="CPU" total={pool.total.cpu} reserved={pool.reserved.cpu} inUse={pool.inUse.cpu} unit="cores" color="#4A65DC" />
-                  <ResBar label="Memory" total={pool.total.memory} reserved={pool.reserved.memory} inUse={pool.inUse.memory} unit="GB" color="#7638E5" />
+                  <ResBar
+                    label="CPU"
+                    total={vcpuFromCpuMillis(pool.total.cpuMillis)}
+                    reserved={vcpuFromCpuMillis(pool.reserved.cpuMillis)}
+                    inUse={vcpuFromCpuMillis(pool.inUse.cpuMillis)}
+                    unit="cores"
+                    color="#4A65DC"
+                  />
+                  <ResBar
+                    label="Memory"
+                    total={gbFromMemoryMiB(pool.total.memoryMiB)}
+                    reserved={gbFromMemoryMiB(pool.reserved.memoryMiB)}
+                    inUse={gbFromMemoryMiB(pool.inUse.memoryMiB)}
+                    unit="GB"
+                    color="#7638E5"
+                  />
                   {pool.total.gpu > 0 && (
                     <ResBar label="GPU" total={pool.total.gpu} reserved={pool.reserved.gpu} inUse={pool.inUse.gpu} unit="cards" color="#11A468" />
                   )}
-                  <SimpleGrid cols={pool.total.gpu > 0 ? 3 : 2} spacing="xs" style={{ paddingTop: 4 }}>
+                  <SimpleGrid
+                    cols={pool.total.gpu > 0 ? 3 : 2}
+                    spacing="xs"
+                    style={{ paddingTop: 4 }}
+                  >
                     {(['CPU', 'MEM'] as const).map((l) => {
-                      const v = l === 'CPU' ? pool.avail.cpu : pool.avail.memory;
+                      const v =
+                        l === 'CPU'
+                          ? vcpuFromCpuMillis(pool.avail.cpuMillis)
+                          : gbFromMemoryMiB(pool.avail.memoryMiB);
                       return (
                         <Box key={l} ta="center">
                           <Text className={`${classes.freeValue} ${v > 0 ? classes.freeValuePositive : classes.freeValueNegative}`}>{v}</Text>

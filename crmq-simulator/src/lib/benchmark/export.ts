@@ -7,8 +7,14 @@
  */
 
 import type { BenchmarkSuiteResult, ScenarioResult } from './runner';
-import type { AggregatedMetrics, ConfidenceInterval, PairedTestResult, ScenarioComparison } from './statistics';
+import type {
+  AggregatedMetrics,
+  ConfidenceInterval,
+  PairedTestResult,
+  ScenarioComparison,
+} from './statistics';
 import type { ScenarioPreset, ArrivalPattern, JobSizeDistribution } from './traffic';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -109,10 +115,16 @@ export const exportCSV = (result: BenchmarkSuiteResult, preset?: ScenarioPreset)
       rows.push(['Name', 'Org', 'CPU', 'Memory (GB)', 'GPU', 'Duration', 'Interval', 'Est. Count', 'User Priority', 'Tool Priority']);
       for (const t of wc.arrivalPattern.templates) {
         rows.push([
-          t.name, t.orgId, String(t.cpu), String(t.memory), String(t.gpu),
-          fmtSec(t.durationSeconds), `every ${fmtSec(t.intervalSeconds)}`,
+          t.name,
+          t.orgId,
+          String(vcpuFromCpuMillis(t.cpuMillis)),
+          String(gbFromMemoryMiB(t.memoryMiB)),
+          String(t.gpu),
+          fmtSec(t.durationSeconds),
+          `every ${fmtSec(t.intervalSeconds)}`,
           String(Math.floor(wc.durationSeconds / t.intervalSeconds)),
-          String(t.userPriority), String(t.toolPriority),
+          String(t.userPriority),
+          String(t.toolPriority),
         ]);
       }
     }
@@ -271,7 +283,15 @@ export const exportMarkdown = (result: BenchmarkSuiteResult, preset?: ScenarioPr
       lines.push('| Job Type | Org | CPU | Mem (GB) | GPU | Duration | Interval | Est. Count | User Prio | Tool Prio |');
       lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
       for (const t of wc.arrivalPattern.templates) {
-        lines.push(`| ${t.name} | ${t.orgId} | ${t.cpu} | ${t.memory} | ${t.gpu} | ${fmtSec(t.durationSeconds)} | every ${fmtSec(t.intervalSeconds)} | ${Math.floor(wc.durationSeconds / t.intervalSeconds)} | ${t.userPriority} | ${t.toolPriority} |`);
+        const line =
+          `| ${t.name} | ${t.orgId} | ` +
+          `${vcpuFromCpuMillis(t.cpuMillis)} | ` +
+          `${gbFromMemoryMiB(t.memoryMiB)} | ${t.gpu} | ` +
+          `${fmtSec(t.durationSeconds)} | ` +
+          `every ${fmtSec(t.intervalSeconds)} | ` +
+          `${Math.floor(wc.durationSeconds / t.intervalSeconds)} | ` +
+          `${t.userPriority} | ${t.toolPriority} |`;
+        lines.push(line);
       }
       lines.push('');
 
@@ -279,9 +299,11 @@ export const exportMarkdown = (result: BenchmarkSuiteResult, preset?: ScenarioPr
       const orgSummary: Record<string, { jobs: number; totalCpu: number }> = {};
       for (const t of wc.arrivalPattern.templates) {
         const count = Math.floor(wc.durationSeconds / t.intervalSeconds);
-        if (!orgSummary[t.orgId]) orgSummary[t.orgId] = { jobs: 0, totalCpu: 0 };
+        if (!orgSummary[t.orgId]) {
+          orgSummary[t.orgId] = { jobs: 0, totalCpu: 0 };
+        }
         orgSummary[t.orgId].jobs += count;
-        orgSummary[t.orgId].totalCpu += count * t.cpu;
+        orgSummary[t.orgId].totalCpu += count * vcpuFromCpuMillis(t.cpuMillis);
       }
       lines.push('### Per-Org Summary');
       lines.push('');

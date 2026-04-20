@@ -22,6 +22,7 @@
 
 import type { Job, CRMQConfig, Org, OrgUsageMap, Resources } from '../types';
 import { getJobPoolType } from '../types';
+import { vcpuFromCpuMillis } from '../units';
 
 // ── Scoring Function Interface ────────────────────────────────────────────
 
@@ -149,14 +150,18 @@ const drfFairShare: ScoringFormula = {
       const poolType = getJobPoolType(job, config);
       const pool = config.cluster.pools.find(p => p.type === poolType);
       if (pool) {
-        const used = orgUsage[job.orgId]?.[poolType] ?? { cpu: 0, memory: 0, gpu: 0 };
-        const total = {
-          cpu: pool.total.cpu - pool.reserved.cpu,
-          memory: pool.total.memory - pool.reserved.memory,
+        const used =
+          orgUsage[job.orgId]?.[poolType]
+          ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+        const total: Resources = {
+          cpuMillis: pool.total.cpuMillis - pool.reserved.cpuMillis,
+          memoryMiB: pool.total.memoryMiB - pool.reserved.memoryMiB,
           gpu: pool.total.gpu - pool.reserved.gpu,
         };
-        const cpuShare = total.cpu > 0 ? used.cpu / total.cpu : 0;
-        const memShare = total.memory > 0 ? used.memory / total.memory : 0;
+        const cpuShare =
+          total.cpuMillis > 0 ? used.cpuMillis / total.cpuMillis : 0;
+        const memShare =
+          total.memoryMiB > 0 ? used.memoryMiB / total.memoryMiB : 0;
         const gpuShare = total.gpu > 0 ? used.gpu / total.gpu : 0;
 
         dominantShare = Math.max(cpuShare, memShare, gpuShare);
@@ -254,6 +259,7 @@ const balancedComposite: ScoringFormula = {
     // 3. Org load: org_cpus_in_pool / pool_total_cpu
     //    CPU-only — AWS EKS measures and bills by vCPU,
     //    so CPU is the authoritative dimension for load.
+    //    Ratio is unit-invariant: cpuMillis / cpuMillis.
     let orgLoad = 0;
     if (orgUsage) {
       const poolType = getJobPoolType(job, config);
@@ -262,16 +268,20 @@ const balancedComposite: ScoringFormula = {
       if (pool) {
         const used =
           orgUsage[job.orgId]?.[poolType]
-          ?? { cpu: 0, memory: 0, gpu: 0 };
-        orgLoad = pool.total.cpu > 0
-          ? Math.min(1, used.cpu / pool.total.cpu)
+          ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+        orgLoad = pool.total.cpuMillis > 0
+          ? Math.min(1, used.cpuMillis / pool.total.cpuMillis)
           : 0;
       }
     }
 
-    // 4. CPU-hours: cpu_requested × estimatedDuration (hours)
-    const cpuHours =
-      job.resources.cpu * (job.estimatedDuration / 3600);
+    // 4. CPU-hours: vcpu_requested × estimatedDuration (hours).
+    //    Mirrors platform balanced-composite-scoring.strategy.ts:337,
+    //    which divides cpuMillis by 1000 internally before multiplying
+    //    by durationHrs. MAX_CPU_HOURS (=1000) stays expressed in
+    //    vCPU·hours, matching the platform default.
+    const vcpu = vcpuFromCpuMillis(job.resources.cpuMillis);
+    const cpuHours = vcpu * (job.estimatedDuration / 3600);
     const cpuHrsNorm = Math.min(
       1,
       Math.log(1 + cpuHours) / Math.log(1 + MAX_CPU_HOURS),

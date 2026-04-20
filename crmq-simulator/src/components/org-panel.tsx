@@ -6,6 +6,7 @@ import { memo, useState } from 'react';
 import { Box, Group, Stack, Text, UnstyledButton } from '@mantine/core';
 import type { Org, OrgUsageMap, ResourcePool, Resources, CRMQConfig } from '@/lib/types';
 import { zeroPoolUsage } from '@/lib/scheduler';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 import classes from './org-panel.module.css';
 
 interface OrgPanelProps {
@@ -47,8 +48,16 @@ export const OrgPanel = memo(({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => 
           const usage = orgUsage[org.id] ?? zeroPoolUsage(cfg);
 
           // Summary: total utilization across pools
-          const totalUsedCpu = pools.reduce((s, p) => s + (usage[p.type]?.cpu ?? 0), 0);
-          const totalLimitCpu = pools.reduce((s, p) => s + (org.limits[p.type]?.cpu ?? 0), 0);
+          const totalUsedCpu = pools.reduce(
+            (s, p) =>
+              s + vcpuFromCpuMillis(usage[p.type]?.cpuMillis ?? 0),
+            0
+          );
+          const totalLimitCpu = pools.reduce(
+            (s, p) =>
+              s + vcpuFromCpuMillis(org.limits[p.type]?.cpuMillis ?? 0),
+            0
+          );
           const totalPct = totalLimitCpu > 0 ? Math.round((totalUsedCpu / totalLimitCpu) * 100) : 0;
 
           return (
@@ -73,8 +82,16 @@ export const OrgPanel = memo(({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => 
               {!isCollapsed && (
                 <div className={classes.gridBody}>
                   {pools.map((pool) => {
-                    const poolUsage = usage[pool.type] ?? { cpu: 0, memory: 0, gpu: 0 };
-                    const poolLimits = org.limits[pool.type] ?? { cpu: 0, memory: 0, gpu: 0 };
+                    const poolUsage = usage[pool.type] ?? {
+                      cpuMillis: 0,
+                      memoryMiB: 0,
+                      gpu: 0,
+                    };
+                    const poolLimits = org.limits[pool.type] ?? {
+                      cpuMillis: 0,
+                      memoryMiB: 0,
+                      gpu: 0,
+                    };
 
                     return (
                       <Box key={pool.type} className={classes.poolBlock}>
@@ -82,9 +99,17 @@ export const OrgPanel = memo(({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => 
                           {pool.shortLabel} Pool
                         </Text>
                         <div className={classes.resourceGrid}>
-                          <MiniBar used={poolUsage.cpu} limit={poolLimits.cpu} color="#4A65DC" />
+                          <MiniBar
+                            used={vcpuFromCpuMillis(poolUsage.cpuMillis)}
+                            limit={vcpuFromCpuMillis(poolLimits.cpuMillis)}
+                            color="#4A65DC"
+                          />
                           <Text className={classes.resourceDimLabel}>CPU</Text>
-                          <MiniBar used={poolUsage.memory} limit={poolLimits.memory} color="#7638E5" />
+                          <MiniBar
+                            used={gbFromMemoryMiB(poolUsage.memoryMiB)}
+                            limit={gbFromMemoryMiB(poolLimits.memoryMiB)}
+                            color="#7638E5"
+                          />
                           <Text className={classes.resourceDimLabel}>MEM</Text>
                           {poolLimits.gpu > 0 && (
                             <>

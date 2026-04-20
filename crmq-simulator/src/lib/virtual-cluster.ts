@@ -71,15 +71,20 @@ export const determineBlockingReason = (
 ): BlockingReason => {
   const org = orgs.find(o => o.id === job.orgId);
   const poolType = getJobPoolType(job, config);
-  const orgPoolLimits = org?.limits[poolType] ?? { cpu: 9999, memory: 9999, gpu: 9999 };
+  const orgPoolLimits: Resources = org?.limits[poolType] ?? {
+    cpuMillis: Number.MAX_SAFE_INTEGER,
+    memoryMiB: Number.MAX_SAFE_INTEGER,
+    gpu: Number.MAX_SAFE_INTEGER,
+  };
   const orgPools = orgUsage[job.orgId];
-  const orgUsedInPool = orgPools?.[poolType] ?? { cpu: 0, memory: 0, gpu: 0 };
+  const orgUsedInPool: Resources = orgPools?.[poolType]
+    ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
 
   // Org quota (per-pool)
   const orgOk = (
-    orgUsedInPool.cpu    + job.resources.cpu    <= orgPoolLimits.cpu    &&
-    orgUsedInPool.memory + job.resources.memory <= orgPoolLimits.memory &&
-    orgUsedInPool.gpu    + job.resources.gpu    <= orgPoolLimits.gpu
+    orgUsedInPool.cpuMillis + job.resources.cpuMillis <= orgPoolLimits.cpuMillis &&
+    orgUsedInPool.memoryMiB + job.resources.memoryMiB <= orgPoolLimits.memoryMiB &&
+    orgUsedInPool.gpu       + job.resources.gpu       <= orgPoolLimits.gpu
   );
   if (!orgOk) return BlockingReason.BLOCKED_BY_ORG_QUOTA;
 
@@ -89,13 +94,15 @@ export const determineBlockingReason = (
   }
 
   // Capacity — check pool (poolType already computed above)
-  const avail = availByPool[poolType] ?? { cpu: 0, memory: 0, gpu: 0 };
+  const avail: Resources = availByPool[poolType]
+    ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
 
   // Capacity — identify bottleneck dimension
-  const cpuShort = job.resources.cpu    > avail.cpu;
-  const memShort = job.resources.memory > avail.memory;
-  const gpuShort = job.resources.gpu    > avail.gpu;
-  const shortCount = (cpuShort ? 1 : 0) + (memShort ? 1 : 0) + (gpuShort ? 1 : 0);
+  const cpuShort = job.resources.cpuMillis > avail.cpuMillis;
+  const memShort = job.resources.memoryMiB > avail.memoryMiB;
+  const gpuShort = job.resources.gpu       > avail.gpu;
+  const shortCount =
+    (cpuShort ? 1 : 0) + (memShort ? 1 : 0) + (gpuShort ? 1 : 0);
 
   if (shortCount > 1) return BlockingReason.WAITING_FOR_MULTI_RESOURCE;
   if (gpuShort)        return BlockingReason.WAITING_FOR_GPU_CAPACITY;

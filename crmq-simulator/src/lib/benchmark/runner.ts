@@ -15,6 +15,7 @@
  */
 
 import type { CRMQConfig, Org } from '../types';
+import { vcpuFromCpuMillis } from '../units';
 import { runDES, runDESAsync } from './des-engine';
 import type { DESConfig, DESResult } from './des-engine';
 import { computeMetrics } from './metrics';
@@ -216,8 +217,8 @@ export const runBenchmarkSuite = async (
         const utilSeries = desResult.utilSamples
           .filter(s => s.time <= arrivalEnd)
           .map(s => {
-            const totalCpu = Object.values(s.pools).reduce((a, p) => a + p.total.cpu, 0);
-            const usedCpu = Object.values(s.pools).reduce((a, p) => a + p.used.cpu, 0);
+            const totalCpu = Object.values(s.pools).reduce((a, p) => a + vcpuFromCpuMillis(p.total.cpuMillis), 0);
+            const usedCpu = Object.values(s.pools).reduce((a, p) => a + vcpuFromCpuMillis(p.used.cpuMillis), 0);
             return { time: s.time, utilization: totalCpu > 0 ? usedCpu / totalCpu : 0 };
           });
         warmUpTime = detectWarmUp(utilSeries);

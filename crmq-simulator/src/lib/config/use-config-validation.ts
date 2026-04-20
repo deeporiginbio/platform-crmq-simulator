@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { getFormula } from './formulas/registry';
 import { resolveLimitToAbsolute } from './limits/registry';
+import { vcpuFromCpuMillis } from '../units';
 
 // ── Per-Pool Percentage Sum Validation ──────────────────────────────────────
 
@@ -41,12 +42,14 @@ const validatePercentageSums = (
 
     if (pctOrgs.length === 0) continue;
 
-    // Only check CPU — memory and GPU are derived from CPU
+    // Only check CPU — memory and GPU are derived from CPU.
+    // Percentage limits are unit-agnostic (plain [0,100]); we read the
+    // canonical `cpuMillis` slot of the percentage Resources object.
     let cpuTotal = 0;
     for (const oq of pctOrgs) {
       const limit = oq.limits[poolType];
       if (limit.mode === 'percentage') {
-        cpuTotal += limit.pct.cpu;
+        cpuTotal += limit.pct.cpuMillis;
       }
     }
 
@@ -112,16 +115,24 @@ const validateLimitsVsCapacity = (
       const limit = oq.limits[pool.type];
       if (!limit || limit.mode === 'uncapped') continue;
 
-      // Only validate CPU — memory and GPU are derived from CPU
+      // Only validate CPU — memory and GPU are derived from CPU.
+      // Compare in canonical cpuMillis; display values in UI-facing vCPU.
       const resolved = resolveLimitToAbsolute(limit, pool.total);
 
-      if (resolved.cpu > pool.total.cpu && pool.total.cpu > 0) {
+      if (
+        resolved.cpuMillis > pool.total.cpuMillis
+        && pool.total.cpuMillis > 0
+      ) {
         errors.push({
           severity: 'error',
           orgId: oq.orgId,
           pool: pool.type,
           field: `orgQuotas.${oq.orgId}.${pool.type}.cpu`,
-          message: `Org "${oq.orgId}" CPU limit (${resolved.cpu}) exceeds pool "${pool.type}" total capacity (${pool.total.cpu})`,
+          message:
+            `Org "${oq.orgId}" CPU limit`
+            + ` (${vcpuFromCpuMillis(resolved.cpuMillis)} vCPU)`
+            + ` exceeds pool "${pool.type}" total capacity`
+            + ` (${vcpuFromCpuMillis(pool.total.cpuMillis)} vCPU)`,
         });
       }
     }
