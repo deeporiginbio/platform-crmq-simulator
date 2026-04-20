@@ -20,6 +20,7 @@
  */
 
 import type { Resources, Org, CRMQConfig } from '../types';
+import { cpuMillisFromVcpu, memoryMiBFromGb } from '../units';
 
 // ── PRNG (Linear Congruential Generator) ──────────────────────────────────
 // Deterministic, seedable, fast. Good enough for simulation.
@@ -101,8 +102,8 @@ export interface MMPPState {
 export interface PeriodicJobTemplate {
   name: string;
   orgId: string;
-  cpu: number;
-  memory: number;
+  cpuMillis: number;
+  memoryMiB: number;
   gpu: number;
   durationSeconds: number;
   intervalSeconds: number;   // one job every N seconds
@@ -241,15 +242,23 @@ export const generateJobSize = (
   switch (dist.type) {
     case 'fixed':
       return {
-        resources: { cpu: dist.cpu, memory: dist.memory, gpu: dist.gpu },
+        resources: {
+          cpuMillis: cpuMillisFromVcpu(dist.cpu),
+          memoryMiB: memoryMiBFromGb(dist.memory),
+          gpu: dist.gpu,
+        },
         duration: dist.duration,
       };
 
     case 'uniform':
       return {
         resources: {
-          cpu: rng.nextInt(dist.cpuRange[0], dist.cpuRange[1]),
-          memory: rng.nextInt(dist.memoryRange[0], dist.memoryRange[1]),
+          cpuMillis: cpuMillisFromVcpu(
+            rng.nextInt(dist.cpuRange[0], dist.cpuRange[1])
+          ),
+          memoryMiB: memoryMiBFromGb(
+            rng.nextInt(dist.memoryRange[0], dist.memoryRange[1])
+          ),
           gpu: rng.nextInt(dist.gpuRange[0], dist.gpuRange[1]),
         },
         duration: rng.nextInt(dist.durationRange[0], dist.durationRange[1]),
@@ -262,11 +271,11 @@ export const generateJobSize = (
       const duration = Math.round(rng.pareto(dist.durationMin, dist.alpha));
       return {
         resources: {
-          cpu: Math.min(cpu, 128),       // cap to prevent extreme outliers
-          memory: Math.min(memory, 512),
+          cpuMillis: cpuMillisFromVcpu(Math.min(cpu, 128)),
+          memoryMiB: memoryMiBFromGb(Math.min(memory, 512)),
           gpu: Math.min(gpu, 16),
         },
-        duration: Math.min(duration, 28800), // cap at 8 hours
+        duration: Math.min(duration, 28800),
       };
     }
 
@@ -278,8 +287,12 @@ export const generateJobSize = (
         : MIXED_CLASSES.large;
       return {
         resources: {
-          cpu: rng.nextInt(cls.cpuRange[0], cls.cpuRange[1]),
-          memory: rng.nextInt(cls.memRange[0], cls.memRange[1]),
+          cpuMillis: cpuMillisFromVcpu(
+            rng.nextInt(cls.cpuRange[0], cls.cpuRange[1])
+          ),
+          memoryMiB: memoryMiBFromGb(
+            rng.nextInt(cls.memRange[0], cls.memRange[1])
+          ),
           gpu: rng.nextInt(cls.gpuRange[0], cls.gpuRange[1]),
         },
         duration: rng.nextInt(cls.durRange[0], cls.durRange[1]),
@@ -352,7 +365,11 @@ export const generateWorkload = (wc: WorkloadConfig): GeneratedJob[] => {
           orgId: tpl.orgId,
           userPriority: tpl.userPriority,
           toolPriority: tpl.toolPriority,
-          resources: { cpu: tpl.cpu, memory: tpl.memory, gpu: tpl.gpu },
+          resources: {
+            cpuMillis: tpl.cpuMillis,
+            memoryMiB: tpl.memoryMiB,
+            gpu: tpl.gpu,
+          },
           estimatedDuration: duration,
           ttl: Infinity,
           arrivalTime,
@@ -522,8 +539,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'DO-large-96cpu',
             orgId: 'deeporigin',
-            cpu: 96,
-            memory: 384,
+            cpuMillis: cpuMillisFromVcpu(96), memoryMiB: memoryMiBFromGb(384),
             gpu: 0,
             durationSeconds: 21600,
             intervalSeconds: 2400,
@@ -535,8 +551,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'DO-bg-8cpu',
             orgId: 'deeporigin',
-            cpu: 8,
-            memory: 32,
+            cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),
             gpu: 0,
             durationSeconds: 1800,
             intervalSeconds: 300,
@@ -550,8 +565,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Beta-med-32cpu',
             orgId: 'org-beta',
-            cpu: 32,
-            memory: 128,
+            cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),
             gpu: 0,
             durationSeconds: 7200,
             intervalSeconds: 720,
@@ -562,8 +576,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Beta-small-4cpu',
             orgId: 'org-beta',
-            cpu: 4,
-            memory: 16,
+            cpuMillis: cpuMillisFromVcpu(4), memoryMiB: memoryMiBFromGb(16),
             gpu: 0,
             durationSeconds: 900,
             intervalSeconds: 180,
@@ -578,8 +591,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Gamma-med-24cpu',
             orgId: 'org-gamma',
-            cpu: 24,
-            memory: 96,
+            cpuMillis: cpuMillisFromVcpu(24), memoryMiB: memoryMiBFromGb(96),
             gpu: 0,
             durationSeconds: 10800,
             intervalSeconds: 1200,
@@ -590,8 +602,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Gamma-small-16cpu',
             orgId: 'org-gamma',
-            cpu: 16,
-            memory: 64,
+            cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),
             gpu: 0,
             durationSeconds: 3600,
             intervalSeconds: 480,
@@ -607,10 +618,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         // determines which org's jobs dispatch first.
         // Long durations (1-6h) exercise aging curve.
       },
-      sizeDistribution: {
-        type: 'fixed',
-        cpu: 0,
-        memory: 0,
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0,
         gpu: 0,
         duration: 0,
       },
@@ -636,8 +644,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'DO-large-64cpu',
             orgId: 'deeporigin',
-            cpu: 64,
-            memory: 256,
+            cpuMillis: cpuMillisFromVcpu(64), memoryMiB: memoryMiBFromGb(256),
             gpu: 0,
             durationSeconds: 900,
             intervalSeconds: 75,
@@ -649,8 +656,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'DO-small-8cpu',
             orgId: 'deeporigin',
-            cpu: 8,
-            memory: 32,
+            cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),
             gpu: 0,
             durationSeconds: 300,
             intervalSeconds: 35,
@@ -665,8 +671,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Beta-med-16cpu',
             orgId: 'org-beta',
-            cpu: 16,
-            memory: 64,
+            cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),
             gpu: 0,
             durationSeconds: 480,
             intervalSeconds: 60,
@@ -678,8 +683,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Beta-large-48cpu',
             orgId: 'org-beta',
-            cpu: 48,
-            memory: 192,
+            cpuMillis: cpuMillisFromVcpu(48), memoryMiB: memoryMiBFromGb(192),
             gpu: 0,
             durationSeconds: 1200,
             intervalSeconds: 240,
@@ -694,8 +698,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Gamma-med-32cpu',
             orgId: 'org-gamma',
-            cpu: 32,
-            memory: 128,
+            cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),
             gpu: 0,
             durationSeconds: 720,
             intervalSeconds: 90,
@@ -707,8 +710,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Gamma-small-8cpu',
             orgId: 'org-gamma',
-            cpu: 8,
-            memory: 32,
+            cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),
             gpu: 0,
             durationSeconds: 300,
             intervalSeconds: 30,
@@ -723,10 +725,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         // Each org has high-pri + low-pri mix →
         // formula ranking affects dispatch order.
       },
-      sizeDistribution: {
-        type: 'fixed',
-        cpu: 0,
-        memory: 0,
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0,
         gpu: 0,
         duration: 0,
       },
@@ -748,16 +747,16 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // deeporigin: large 64-CPU jobs every 30s (2/min)
           // 180s / 30s = 6 concurrent × 64 = 384 CPU (~28% of quota)
           // High priority org (3) with high-value jobs
-          { name: 'DO-large-64cpu',     orgId: 'deeporigin', cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 180, intervalSeconds: 30,  userPriority: 4, toolPriority: 4 },
+          { name: 'DO-large-64cpu',     orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(64), memoryMiB: memoryMiBFromGb(256),  gpu: 0, durationSeconds: 180, intervalSeconds: 30,  userPriority: 4, toolPriority: 4 },
           // org-beta: small 4-CPU jobs every 2s (30/min)
           // 120s / 2s = 60 concurrent × 4 = 240 CPU (within 384 quota)
           // Floods queue with volume, low priority org (2)
-          { name: 'Beta-small-4cpu',    orgId: 'org-beta',   cpu: 4,   memory: 16,   gpu: 0, durationSeconds: 120, intervalSeconds: 2,   userPriority: 2, toolPriority: 2 },
+          { name: 'Beta-small-4cpu',    orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(4), memoryMiB: memoryMiBFromGb(16),   gpu: 0, durationSeconds: 120, intervalSeconds: 2,   userPriority: 2, toolPriority: 2 },
           // org-gamma: medium 32-CPU jobs every 10s (6/min)
           // 300s / 10s = 30 concurrent × 32 = 960 CPU demand,
           // but quota caps at 12 concurrent (384 CPU)
           // Lowest priority org (1), creates real quota contention
-          { name: 'Gamma-med-32cpu',    orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 300, intervalSeconds: 10,  userPriority: 3, toolPriority: 3 },
+          { name: 'Gamma-med-32cpu',    orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 300, intervalSeconds: 10,  userPriority: 3, toolPriority: 3 },
         ],
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
@@ -805,19 +804,19 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // The formula must decide cross-org priority when not all jobs can run.
           //
           // deeporigin: 96 CPU, 4h, every 45min = 5.3 concurrent × 96 = 512 CPU
-          { name: 'DO-large-96cpu',     orgId: 'deeporigin', cpu: 96,  memory: 384, gpu: 0, durationSeconds: 14400, intervalSeconds: 2700, userPriority: 3, toolPriority: 4 },
+          { name: 'DO-large-96cpu',     orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(96), memoryMiB: memoryMiBFromGb(384), gpu: 0, durationSeconds: 14400, intervalSeconds: 2700, userPriority: 3, toolPriority: 4 },
           // org-beta: 48 CPU, 2h, every 15min = 8 concurrent × 48 = 384 CPU (= quota)
-          { name: 'Beta-med-48cpu',     orgId: 'org-beta',   cpu: 48,  memory: 192, gpu: 0, durationSeconds: 7200,  intervalSeconds: 900,  userPriority: 2, toolPriority: 3 },
+          { name: 'Beta-med-48cpu',     orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(48), memoryMiB: memoryMiBFromGb(192), gpu: 0, durationSeconds: 7200,  intervalSeconds: 900,  userPriority: 2, toolPriority: 3 },
           // org-gamma: 64 CPU, 3h, every 20min = 9 concurrent × 64 = 576 demand,
           // quota caps at 384 (6 running, 3 queued)
-          { name: 'Gamma-med-64cpu',    orgId: 'org-gamma',  cpu: 64,  memory: 256, gpu: 0, durationSeconds: 10800, intervalSeconds: 1200, userPriority: 3, toolPriority: 3 },
+          { name: 'Gamma-med-64cpu',    orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(64), memoryMiB: memoryMiBFromGb(256), gpu: 0, durationSeconds: 10800, intervalSeconds: 1200, userPriority: 3, toolPriority: 3 },
           // Background small jobs to fill gaps
           // DO: 2700/300 = 9 × 8 = 72 CPU
-          { name: 'BG-deeporigin-8cpu', orgId: 'deeporigin', cpu: 8,   memory: 32,  gpu: 0, durationSeconds: 2700,  intervalSeconds: 300,  userPriority: 2, toolPriority: 2 },
+          { name: 'BG-deeporigin-8cpu', orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),  gpu: 0, durationSeconds: 2700,  intervalSeconds: 300,  userPriority: 2, toolPriority: 2 },
           // Beta: 600/120 = 5 × 4 = 20 CPU
-          { name: 'BG-beta-4cpu',       orgId: 'org-beta',   cpu: 4,   memory: 16,  gpu: 0, durationSeconds: 600,   intervalSeconds: 120,  userPriority: 1, toolPriority: 1 },
+          { name: 'BG-beta-4cpu',       orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(4), memoryMiB: memoryMiBFromGb(16),  gpu: 0, durationSeconds: 600,   intervalSeconds: 120,  userPriority: 1, toolPriority: 1 },
           // Gamma: 1800/300 = 6 × 8 = 48 CPU
-          { name: 'BG-gamma-8cpu',      orgId: 'org-gamma',  cpu: 8,   memory: 32,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 300,  userPriority: 2, toolPriority: 2 },
+          { name: 'BG-gamma-8cpu',      orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),  gpu: 0, durationSeconds: 1800,  intervalSeconds: 300,  userPriority: 2, toolPriority: 2 },
         ],
         // Demand: DO 512+72=584, beta 384+20=404, gamma 576+48=624
         // Quotas shared per org: beta main alone = 384 (quota full),
@@ -846,17 +845,17 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // org-beta flood: 8 CPU jobs every 30s = 2,880/day
           // 1800s/30s = 60 concurrent × 8 = 480 CPU demand,
           // quota caps at 384 (48 running, 12 always queued)
-          { name: 'Flood-8cpu',         orgId: 'org-beta',   cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 30,   userPriority: 1, toolPriority: 1 },
+          { name: 'Flood-8cpu',         orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),   gpu: 0, durationSeconds: 1800,  intervalSeconds: 30,   userPriority: 1, toolPriority: 1 },
           // deeporigin critical: 128 CPU, 2h, every 1h = 24/day
           // 7200s/3600s = 2 concurrent × 128 = 256 CPU
-          { name: 'Critical-128cpu',    orgId: 'deeporigin', cpu: 128, memory: 512,  gpu: 0, durationSeconds: 7200,  intervalSeconds: 3600, userPriority: 5, toolPriority: 5 },
+          { name: 'Critical-128cpu',    orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(128), memoryMiB: memoryMiBFromGb(512),  gpu: 0, durationSeconds: 7200,  intervalSeconds: 3600, userPriority: 5, toolPriority: 5 },
           // deeporigin background: 32 CPU, 1h, every 5min
           // 3600s/300s = 12 concurrent × 32 = 384 CPU
-          { name: 'DO-background-32cpu', orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 300,  userPriority: 3, toolPriority: 3 },
+          { name: 'DO-background-32cpu', orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 300,  userPriority: 3, toolPriority: 3 },
           // org-gamma normal: 32 CPU, 1h, every 4min
           // 3600s/240s = 15 concurrent × 32 = 480 demand,
           // quota caps at 384 (12 running, 3 queued)
-          { name: 'Normal-32cpu',       orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 240,  userPriority: 3, toolPriority: 3 },
+          { name: 'Normal-32cpu',       orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 240,  userPriority: 3, toolPriority: 3 },
         ],
         // Total running: beta 384 + DO 640 + gamma 384 = 1,408 > 1,362
         // All 3 orgs hit quota walls + pool capacity contested.
@@ -880,15 +879,15 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // Non-overlapping (dur < interval), but arrives into saturated cluster.
           // DO quota: 96 (medium) + 768 = 864 < 1,364. Quota OK.
           // Pool: 750 (bg) + 768 = 1,518 > 1,360. Gate 2 blocks.
-          { name: 'WHALE-768cpu',       orgId: 'deeporigin', cpu: 768, memory: 3072, gpu: 0, durationSeconds: 14400, intervalSeconds: 18000, userPriority: 5, toolPriority: 5 },
+          { name: 'WHALE-768cpu',       orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(768), memoryMiB: memoryMiBFromGb(3072), gpu: 0, durationSeconds: 14400, intervalSeconds: 18000, userPriority: 5, toolPriority: 5 },
           // deeporigin medium: 16 CPU, 1h, every 10min = 6 × 16 = 96 CPU
-          { name: 'Medium-DO-16cpu',    orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 3600,  intervalSeconds: 600,  userPriority: 3, toolPriority: 3 },
+          { name: 'Medium-DO-16cpu',    orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 3600,  intervalSeconds: 600,  userPriority: 3, toolPriority: 3 },
           // org-beta: 16 CPU every 45s, 20min dur = 26.7 concurrent × 16
           // = 427 demand, quota caps at 384 (24 running)
-          { name: 'BG-beta-16cpu',      orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1200,  intervalSeconds: 45,   userPriority: 2, toolPriority: 2 },
+          { name: 'BG-beta-16cpu',      orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 1200,  intervalSeconds: 45,   userPriority: 2, toolPriority: 2 },
           // org-gamma: 16 CPU every 50s, 15min dur = 18 concurrent × 16
           // = 288 CPU (within 384 quota)
-          { name: 'BG-gamma-16cpu',     orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 900,   intervalSeconds: 50,   userPriority: 2, toolPriority: 3 },
+          { name: 'BG-gamma-16cpu',     orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 900,   intervalSeconds: 50,   userPriority: 2, toolPriority: 3 },
         ],
         // Background steady-state: 96 + 384 + 288 = 768 CPU (~56% util)
         // Whale needs 768 more → 1,536 > 1,360. Must wait ~20-40 min
@@ -909,11 +908,11 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         type: 'periodic_mix',
         templates: [
           // deeporigin: large GPU training jobs (32 GPU each, every 12m) — 160 GPU/hr demand
-          { name: 'ML-training-32gpu',  orgId: 'deeporigin', cpu: 64,  memory: 256,  gpu: 32, durationSeconds: 7200,  intervalSeconds: 720,  userPriority: 4, toolPriority: 5 },
+          { name: 'ML-training-32gpu',  orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(64), memoryMiB: memoryMiBFromGb(256),  gpu: 32, durationSeconds: 7200,  intervalSeconds: 720,  userPriority: 4, toolPriority: 5 },
           // org-beta: high-frequency inference (4 GPU each, every 3m) — 80 GPU/hr demand
-          { name: 'Inference-4gpu',     orgId: 'org-beta',   cpu: 8,   memory: 32,   gpu: 4,  durationSeconds: 900,   intervalSeconds: 180,  userPriority: 2, toolPriority: 2 },
+          { name: 'Inference-4gpu',     orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),   gpu: 4,  durationSeconds: 900,   intervalSeconds: 180,  userPriority: 2, toolPriority: 2 },
           // org-gamma: medium docking jobs (16 GPU each, every 20m) — 48 GPU/hr demand
-          { name: 'Docking-16gpu',      orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 16, durationSeconds: 14400, intervalSeconds: 1200, userPriority: 3, toolPriority: 4 },
+          { name: 'Docking-16gpu',      orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 16, durationSeconds: 14400, intervalSeconds: 1200, userPriority: 3, toolPriority: 4 },
         ],
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
@@ -1008,12 +1007,12 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         type: 'periodic_mix',
         templates: [
           // org-beta: 70% of 720 jobs/day = ~504 small jobs (every ~171s)
-          { name: 'Beta-small-4cpu',    orgId: 'org-beta',   cpu: 4,   memory: 16,   gpu: 0, durationSeconds: 900,   intervalSeconds: 171,  userPriority: 1, toolPriority: 2 },
+          { name: 'Beta-small-4cpu',    orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(4), memoryMiB: memoryMiBFromGb(16),   gpu: 0, durationSeconds: 900,   intervalSeconds: 171,  userPriority: 1, toolPriority: 2 },
           // deeporigin: 10% of 720 = ~72 large jobs (every 1200s = 20m)
-          { name: 'DO-large-128cpu',    orgId: 'deeporigin', cpu: 128, memory: 512,  gpu: 0, durationSeconds: 14400, intervalSeconds: 1200, userPriority: 4, toolPriority: 5 },
+          { name: 'DO-large-128cpu',    orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(128), memoryMiB: memoryMiBFromGb(512),  gpu: 0, durationSeconds: 14400, intervalSeconds: 1200, userPriority: 4, toolPriority: 5 },
           // org-gamma: ~240 medium jobs (every 360s = 6m)
           // 3600/360 = 10 × 32 = 320 CPU demand → deeper queue, formula divergence
-          { name: 'Gamma-medium-32cpu', orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360,  userPriority: 3, toolPriority: 3 },
+          { name: 'Gamma-medium-32cpu', orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360,  userPriority: 3, toolPriority: 3 },
         ],
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
@@ -1032,26 +1031,26 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         templates: [
           // deeporigin: prep + compute + GPU (CPU pool ~350 CPU)
           // 900/300 = 3 × 8 = 24 CPU
-          { name: 'DO-prep-8cpu',         orgId: 'deeporigin', cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 900,   intervalSeconds: 300, userPriority: 3, toolPriority: 3 },
+          { name: 'DO-prep-8cpu',         orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),   gpu: 0, durationSeconds: 900,   intervalSeconds: 300, userPriority: 3, toolPriority: 3 },
           // 3600/360 = 10 × 32 = 320 CPU
-          { name: 'DO-compute-32cpu',     orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360, userPriority: 3, toolPriority: 4 },
+          { name: 'DO-compute-32cpu',     orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360, userPriority: 3, toolPriority: 4 },
           // GPU pool: 7200/720 = 10 × (16 CPU, 8 GPU)
-          { name: 'DO-gpu-8gpu',          orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720, userPriority: 3, toolPriority: 5 },
+          { name: 'DO-gpu-8gpu',          orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720, userPriority: 3, toolPriority: 5 },
           // org-beta: prep + compute (CPU pool)
           // 1800/300 = 6 × 16 = 96 CPU
-          { name: 'Beta-prep-16cpu',      orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 300, userPriority: 2, toolPriority: 3 },
+          { name: 'Beta-prep-16cpu',      orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 1800,  intervalSeconds: 300, userPriority: 2, toolPriority: 3 },
           // 3600/360 = 10 × 64 = 640 demand, quota caps at 384
           // (6 running, 4 queued per cycle)
-          { name: 'Beta-compute-64cpu',   orgId: 'org-beta',   cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360, userPriority: 2, toolPriority: 4 },
+          { name: 'Beta-compute-64cpu',   orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(64), memoryMiB: memoryMiBFromGb(256),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 360, userPriority: 2, toolPriority: 4 },
           // org-gamma: analysis + compute + background
           // 1800/240 = 7.5 × 16 = 120 CPU
-          { name: 'Gamma-analysis-16cpu', orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 240, userPriority: 2, toolPriority: 2 },
+          { name: 'Gamma-analysis-16cpu', orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 1800,  intervalSeconds: 240, userPriority: 2, toolPriority: 2 },
           // 3600/480 = 7.5 × 32 = 240 CPU demand → gamma total 360 (within 384)
-          { name: 'Gamma-compute-32cpu',  orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 480, userPriority: 2, toolPriority: 3 },
+          { name: 'Gamma-compute-32cpu',  orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 480, userPriority: 2, toolPriority: 3 },
           // 1800/120 = 15 × 8 = 120 CPU → gamma total 480, quota caps at 384
-          { name: 'BG-standalone-cpu',    orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 120, userPriority: 1, toolPriority: 1 },
+          { name: 'BG-standalone-cpu',    orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),   gpu: 0, durationSeconds: 1800,  intervalSeconds: 120, userPriority: 1, toolPriority: 1 },
           // GPU pool: org-beta GPU jobs
-          { name: 'BG-standalone-gpu',    orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 4, durationSeconds: 3600,  intervalSeconds: 720, userPriority: 2, toolPriority: 2 },
+          { name: 'BG-standalone-gpu',    orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 4, durationSeconds: 3600,  intervalSeconds: 720, userPriority: 2, toolPriority: 2 },
         ],
         // CPU pool demand: DO 344, beta 96+640=736, gamma 120+240+120=480
         // Quotas shared per org: beta capped at 384, gamma capped at 384
@@ -1076,33 +1075,33 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // ── MolProps pipeline (deeporigin) ──
           // Stage 1: Prep — every 3 min (20/hr)
           // 900/180 = 5 × 8 = 40 CPU
-          { name: 'MolProps-prep-8cpu',    orgId: 'deeporigin', cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 900,   intervalSeconds: 180,  userPriority: 3, toolPriority: 3 },
+          { name: 'MolProps-prep-8cpu',    orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),   gpu: 0, durationSeconds: 900,   intervalSeconds: 180,  userPriority: 3, toolPriority: 3 },
           // Stage 2: Compute — every 4 min (15/hr)
           // 3600/240 = 15 × 32 = 480 CPU
-          { name: 'MolProps-main-32cpu',   orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 240,  userPriority: 3, toolPriority: 4 },
+          { name: 'MolProps-main-32cpu',   orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 240,  userPriority: 3, toolPriority: 4 },
           // Stage 3: GPU finish — every 12 min (5/hr)
           // 7200/720 = 10 × (16 CPU, 8 GPU) = 160 CPU, 80 GPU
-          { name: 'MolProps-gpu-8gpu',     orgId: 'deeporigin', cpu: 16,  memory: 64,   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720,  userPriority: 3, toolPriority: 5 },
+          { name: 'MolProps-gpu-8gpu',     orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 8, durationSeconds: 7200,  intervalSeconds: 720,  userPriority: 3, toolPriority: 5 },
 
           // ── Docking pipeline (org-beta) ──
           // Stage 1: Prep — every 3 min
           // 1200/180 = 6.7 × 16 = 107 CPU
-          { name: 'Docking-prep-16cpu',    orgId: 'org-beta',   cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1200,  intervalSeconds: 180,  userPriority: 2, toolPriority: 3 },
+          { name: 'Docking-prep-16cpu',    orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 1200,  intervalSeconds: 180,  userPriority: 2, toolPriority: 3 },
           // Stage 2: Main — every 8 min
           // 3600/480 = 7.5 × 64 = 480 demand, quota caps at 384
-          { name: 'Docking-main-64cpu',    orgId: 'org-beta',   cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 480,  userPriority: 2, toolPriority: 4 },
+          { name: 'Docking-main-64cpu',    orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(64), memoryMiB: memoryMiBFromGb(256),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 480,  userPriority: 2, toolPriority: 4 },
 
           // ── Analysis pipeline (org-gamma) ──
           // Stage 1: Prep — every 3 min
           // 600/180 = 3.3 × 8 = 27 CPU
-          { name: 'Analysis-prep-8cpu',    orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 600,   intervalSeconds: 180,  userPriority: 2, toolPriority: 2 },
+          { name: 'Analysis-prep-8cpu',    orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),   gpu: 0, durationSeconds: 600,   intervalSeconds: 180,  userPriority: 2, toolPriority: 2 },
           // Stage 2: Main — every 4 min
           // 1800/240 = 7.5 × 32 = 240 CPU
-          { name: 'Analysis-main-32cpu',   orgId: 'org-gamma',  cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 1800,  intervalSeconds: 240,  userPriority: 2, toolPriority: 3 },
+          { name: 'Analysis-main-32cpu',   orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 1800,  intervalSeconds: 240,  userPriority: 2, toolPriority: 3 },
 
           // Background standalone jobs (org-gamma)
           // 1800/90 = 20 × 8 = 160 CPU → gamma total ~427, exceeds 384 quota
-          { name: 'BG-standalone-cpu',     orgId: 'org-gamma',  cpu: 8,   memory: 32,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 90,   userPriority: 1, toolPriority: 1 },
+          { name: 'BG-standalone-cpu',     orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(8), memoryMiB: memoryMiBFromGb(32),   gpu: 0, durationSeconds: 1800,  intervalSeconds: 90,   userPriority: 1, toolPriority: 1 },
         ],
         // CPU pool: DO 520 + beta 384 (quota-capped; 587 demand)
         // + gamma 384 (quota-capped; 427 demand) = ~1,288 (94.6%).
@@ -1136,8 +1135,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'DO-small-4cpu',
             orgId: 'deeporigin',
-            cpu: 4,
-            memory: 16,
+            cpuMillis: cpuMillisFromVcpu(4), memoryMiB: memoryMiBFromGb(16),
             gpu: 0,
             durationSeconds: 900,
             intervalSeconds: 8,
@@ -1152,8 +1150,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Gamma-large-128cpu',
             orgId: 'org-gamma',
-            cpu: 128,
-            memory: 512,
+            cpuMillis: cpuMillisFromVcpu(128), memoryMiB: memoryMiBFromGb(512),
             gpu: 0,
             durationSeconds: 14400,
             intervalSeconds: 480,
@@ -1168,8 +1165,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Beta-medium-16cpu',
             orgId: 'org-beta',
-            cpu: 16,
-            memory: 64,
+            cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),
             gpu: 0,
             durationSeconds: 3600,
             intervalSeconds: 90,
@@ -1185,10 +1181,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         // does gamma's reservation mode block
         // everything?
       },
-      sizeDistribution: {
-        type: 'fixed',
-        cpu: 0,
-        memory: 0,
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0,
         gpu: 0,
         duration: 0,
       },
@@ -1217,8 +1210,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'DO-background',
             orgId: 'deeporigin',
-            cpu: 32,
-            memory: 128,
+            cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),
             gpu: 0,
             durationSeconds: 3600,
             intervalSeconds: 180,
@@ -1231,8 +1223,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Honest-128cpu',
             orgId: 'deeporigin',
-            cpu: 128,
-            memory: 512,
+            cpuMillis: cpuMillisFromVcpu(128), memoryMiB: memoryMiBFromGb(512),
             gpu: 0,
             durationSeconds: 7200,
             intervalSeconds: 1200,
@@ -1246,8 +1237,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           {
             name: 'Split-4cpu',
             orgId: 'org-beta',
-            cpu: 4,
-            memory: 16,
+            cpuMillis: cpuMillisFromVcpu(4), memoryMiB: memoryMiBFromGb(16),
             gpu: 0,
             durationSeconds: 7200,
             intervalSeconds: 38,
@@ -1256,8 +1246,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           },
         ],
       },
-      sizeDistribution: {
-        type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0,
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0,
       },
       seed: 10001,
     },
@@ -1275,21 +1264,21 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
           // org-gamma: 16 CPU jobs, 3h duration, every 2 min
           // 10800s / 120s = 90 arrivals per 3h window, but quota caps at
           // 24 concurrent (24 × 16 = 384 CPU = quota limit)
-          { name: 'Gamma-fill-16cpu',   orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 10800, intervalSeconds: 120,  userPriority: 2, toolPriority: 2 },
+          { name: 'Gamma-fill-16cpu',   orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 10800, intervalSeconds: 120,  userPriority: 2, toolPriority: 2 },
           // org-beta: 32 CPU jobs, 2h duration, every 2 min
           // 7200s / 120s = 60 arrivals per 2h window, quota caps at
           // 12 concurrent (12 × 32 = 384 CPU = quota limit)
-          { name: 'Beta-fill-32cpu',    orgId: 'org-beta',   cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 7200,  intervalSeconds: 120,  userPriority: 2, toolPriority: 2 },
+          { name: 'Beta-fill-32cpu',    orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 7200,  intervalSeconds: 120,  userPriority: 2, toolPriority: 2 },
           // deeporigin background: 32 CPU jobs, 1h, every 3 min
           // 3600s / 180s = 20 concurrent × 32 = 640 CPU demand,
           // but cluster headroom after gamma+beta = ~594 CPU,
           // so ~18 concurrent fit (576 CPU). Total occupied: ~1,344 CPU.
           // Only ~18 CPU free — the 256-CPU critical job CANNOT fit.
-          { name: 'DO-background-32cpu', orgId: 'deeporigin', cpu: 32,  memory: 128,  gpu: 0, durationSeconds: 3600,  intervalSeconds: 180,  userPriority: 3, toolPriority: 3 },
+          { name: 'DO-background-32cpu', orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(32), memoryMiB: memoryMiBFromGb(128),  gpu: 0, durationSeconds: 3600,  intervalSeconds: 180,  userPriority: 3, toolPriority: 3 },
           // deeporigin critical: 5 large jobs (256 CPU, 1h, every ~4.8h)
           // Must trigger reservation mode to accumulate 256 free CPU
           // by blocking new dispatches until enough jobs complete.
-          { name: 'DO-critical-256cpu', orgId: 'deeporigin', cpu: 256, memory: 1024, gpu: 0, durationSeconds: 3600,  intervalSeconds: 17280, userPriority: 5, toolPriority: 5 },
+          { name: 'DO-critical-256cpu', orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(256), memoryMiB: memoryMiBFromGb(1024), gpu: 0, durationSeconds: 3600,  intervalSeconds: 17280, userPriority: 5, toolPriority: 5 },
         ],
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
@@ -1307,11 +1296,11 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         type: 'periodic_mix',
         templates: [
           // deeporigin: continuous 128-CPU stream every 10m (max priority)
-          { name: 'Alpha-stream-128cpu', orgId: 'deeporigin', cpu: 128, memory: 512,  gpu: 0, durationSeconds: 7200,  intervalSeconds: 600,  userPriority: 5, toolPriority: 5 },
+          { name: 'Alpha-stream-128cpu', orgId: 'deeporigin', cpuMillis: cpuMillisFromVcpu(128), memoryMiB: memoryMiBFromGb(512),  gpu: 0, durationSeconds: 7200,  intervalSeconds: 600,  userPriority: 5, toolPriority: 5 },
           // org-beta: continuous 64-CPU stream every 10m (high priority)
-          { name: 'Beta-stream-64cpu',   orgId: 'org-beta',   cpu: 64,  memory: 256,  gpu: 0, durationSeconds: 7200,  intervalSeconds: 600,  userPriority: 4, toolPriority: 4 },
+          { name: 'Beta-stream-64cpu',   orgId: 'org-beta',   cpuMillis: cpuMillisFromVcpu(64), memoryMiB: memoryMiBFromGb(256),  gpu: 0, durationSeconds: 7200,  intervalSeconds: 600,  userPriority: 4, toolPriority: 4 },
           // org-gamma: SINGLE 16-CPU job (submitted once at start, lowest priority)
-          { name: 'Gamma-single-16cpu',  orgId: 'org-gamma',  cpu: 16,  memory: 64,   gpu: 0, durationSeconds: 1800,  intervalSeconds: 86400, userPriority: 1, toolPriority: 1 },
+          { name: 'Gamma-single-16cpu',  orgId: 'org-gamma',  cpuMillis: cpuMillisFromVcpu(16), memoryMiB: memoryMiBFromGb(64),   gpu: 0, durationSeconds: 1800,  intervalSeconds: 86400, userPriority: 1, toolPriority: 1 },
         ],
       },
       sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },

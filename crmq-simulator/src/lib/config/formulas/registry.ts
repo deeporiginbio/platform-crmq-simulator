@@ -109,7 +109,9 @@ const balancedComposite: FormulaDefinition<BalancedCompositeParams> = {
     'Production formula: 0.35×priority + 0.25×aging'
     + ' + 0.20×(1−org_load) + 0.20×(1−cpu_hrs_norm).'
     + ' Blended aging (10% linear floor + 90% quadratic,'
-    + ' full at 6h). CPU-only org load.',
+    + ' full at 6h). CPU-only org load. cpu_hrs_norm is'
+    + ' log-normalized against MAX_CPU_HOURS in vCPU·hours'
+    + ' (default 1000, matching platform).',
   icon: '🎯',
   schema: balancedCompositeSchema,
   defaultParams: {

@@ -11,6 +11,7 @@ import { getJobPoolType, getPoolMeta } from '@/lib/types';
 import { normalizeFormulaType } from '@/lib/config/formulas/registry';
 import { SCENARIO_PRESETS } from '@/lib/benchmark/traffic';
 import { useVirtualScroll } from '@/hooks/use-virtual-scroll';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 import classes from './queue-panel.module.css';
 
 interface QueuePanelProps {
@@ -102,7 +103,7 @@ const computeBreakdown = (
       const AGING_HORIZON = 21600;
       const AGING_EXPONENT = 2;
       const AGING_FLOOR = 0.10;
-      const MAX_CPU_HOURS = 1000;
+      const MAX_CPU_HOURS = 1000;   // vCPU·hours — matches platform default
       const maxPriority = 10;
 
       const orgPriorityNorm = priority / maxPriority;
@@ -111,8 +112,7 @@ const computeBreakdown = (
         AGING_FLOOR * t
         + (1 - AGING_FLOOR)
           * Math.pow(t, AGING_EXPONENT);
-      const cpuHours =
-        job.resources.cpu * (job.estimatedDuration / 3600);
+      const cpuHours = vcpuFromCpuMillis(job.resources.cpuMillis) * (job.estimatedDuration / 3600);
       const cpuHrsNorm = Math.min(
         1,
         Math.log(1 + cpuHours)
@@ -205,10 +205,16 @@ const QueueItem = memo(({ job, rank, isTarget, cfg, orgs, prediction }: QueueIte
         </Group>
 
         <Group gap={8} wrap="wrap">
-          <Text className={classes.resourceTag}>CPU:{job.resources.cpu}</Text>
-          <Text className={classes.resourceTag}>MEM:{job.resources.memory}GB</Text>
+          <Text className={classes.resourceTag}>
+            CPU:{vcpuFromCpuMillis(job.resources.cpuMillis)}
+          </Text>
+          <Text className={classes.resourceTag}>
+            MEM:{gbFromMemoryMiB(job.resources.memoryMiB)}GB
+          </Text>
           <Text className={classes.resourceTag}>GPU:{job.resources.gpu}</Text>
-          <Text className={classes.resourceTag}>Est:{fmtTime(job.estimatedDuration)}</Text>
+          <Text className={classes.resourceTag}>
+            Est:{fmtTime(job.estimatedDuration)}
+          </Text>
         </Group>
 
         <Text className={classes.scoreBreakdown} title={breakdown.description}>

@@ -13,15 +13,26 @@ import { z } from 'zod';
 
 // ── Resource Dimensions ──────────────────────────────────────────────────────
 
+/**
+ * Resources — canonical model shape matching platform `ComputeResources`.
+ *
+ *   cpuMillis: 1000 = 1 vCPU  (matches platform cpuMillis)
+ *   memoryMiB: 1024 = 1 GiB   (matches platform memoryMiB)
+ *   gpu:       whole GPU count
+ *
+ * UI layers display vCPU / GB and convert at the boundary via
+ * helpers in `src/lib/units.ts`. Do not use raw `cpuMillis` or
+ * `memoryMiB` in user-facing labels.
+ */
 export interface Resources {
-  cpu: number;
-  memory: number; // GB
+  cpuMillis: number;
+  memoryMiB: number;
   gpu: number;
 }
 
 export const resourcesSchema = z.object({
-  cpu: z.number(),
-  memory: z.number(),
+  cpuMillis: z.number(),
+  memoryMiB: z.number(),
   gpu: z.number(),
 });
 
@@ -122,8 +133,12 @@ export const schedulerConfigSchema = z.object({
 
 /**
  * Determines what the user configures for quota limits on this pool.
- *   'cpu' — user sets CPU; memory = CPU × 4; GPU hidden entirely (e.g. mason)
- *   'gpu' — user sets GPU; CPU = GPU × 4; memory = CPU × 4 (e.g. mason-gpu)
+ *   'cpu' — user sets vCPU; memory (GB) = vCPU × 4; GPU hidden (e.g. mason)
+ *   'gpu' — user sets GPU; vCPU = GPU × 4; memory (GB) = vCPU × 4 (e.g. mason-gpu)
+ *
+ * NOTE: the string token 'cpu' is a UI-facing discriminator for which driver
+ * dimension the operator sets. It is NOT the internal unit (cpuMillis).
+ * See `src/lib/units.ts` for the model-vs-UI boundary.
  */
 export type QuotaType = 'cpu' | 'gpu';
 

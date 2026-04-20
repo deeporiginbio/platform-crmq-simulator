@@ -5,6 +5,7 @@
 import { Box, Badge, Group, Stack, Text, Table, Collapse } from '@mantine/core';
 import { useState } from 'react';
 import type { ScenarioPreset } from '@/lib/benchmark';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -261,8 +262,16 @@ export const ScenarioDetails = ({ preset, defaultCollapsed = false, compact = fa
                           {t.orgId}
                         </Badge>
                       </Table.Td>
-                      <Table.Td><Text size="xs" ff="monospace">{t.cpu}</Text></Table.Td>
-                      <Table.Td><Text size="xs" ff="monospace">{t.memory}</Text></Table.Td>
+                      <Table.Td>
+                        <Text size="xs" ff="monospace">
+                          {vcpuFromCpuMillis(t.cpuMillis)}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="xs" ff="monospace">
+                          {gbFromMemoryMiB(t.memoryMiB)}
+                        </Text>
+                      </Table.Td>
                       <Table.Td><Text size="xs" ff="monospace">{t.gpu}</Text></Table.Td>
                       <Table.Td><Text size="xs" ff="monospace">{fmtDuration(t.durationSeconds)}</Text></Table.Td>
                       <Table.Td><Text size="xs" ff="monospace">every {fmtDuration(t.intervalSeconds)}</Text></Table.Td>
@@ -283,9 +292,11 @@ export const ScenarioDetails = ({ preset, defaultCollapsed = false, compact = fa
                 const orgSummary: Record<string, { jobs: number; totalCpu: number }> = {};
                 for (const t of wc.arrivalPattern.templates) {
                   const count = Math.floor(wc.durationSeconds / t.intervalSeconds);
-                  if (!orgSummary[t.orgId]) orgSummary[t.orgId] = { jobs: 0, totalCpu: 0 };
+                  if (!orgSummary[t.orgId]) {
+                    orgSummary[t.orgId] = { jobs: 0, totalCpu: 0 };
+                  }
                   orgSummary[t.orgId].jobs += count;
-                  orgSummary[t.orgId].totalCpu += count * t.cpu;
+                  orgSummary[t.orgId].totalCpu += count * vcpuFromCpuMillis(t.cpuMillis);
                 }
                 return (
                   <Box mt="xs">

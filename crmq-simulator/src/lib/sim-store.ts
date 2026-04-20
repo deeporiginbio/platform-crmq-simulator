@@ -39,6 +39,7 @@ import {
 import { useConfigStore } from './store';
 import { loadSimState, persistSimState } from './sim-persistence';
 import type { CRMQConfig, Org } from './types';
+import { gbFromMemoryMiB, vcpuFromCpuMillis } from './units';
 import { generateWorkload, SCENARIO_PRESETS } from './benchmark/traffic';
 import {
   stripConfig,
@@ -484,9 +485,12 @@ export const useSimStore = create<SimStore>()(
         enqueuedAt: st.simTime,
         skipCount: 0,
       };
+      // Log in UI units (vCPU + GB) — model uses cpuMillis + memoryMiB.
+      const vcpu = vcpuFromCpuMillis(j.resources.cpuMillis);
+      const gb = gbFromMemoryMiB(j.resources.memoryMiB);
       const log = mkLog(
         st.simTime,
-        `ENQUEUE | ${j.name} [${j.id}] — org=${j.orgId}, CPU:${j.resources.cpu} MEM:${j.resources.memory}GB GPU:${j.resources.gpu}, est=${fmtTime(j.estimatedDuration)}`,
+        `ENQUEUE | ${j.name} [${j.id}] — org=${j.orgId}, CPU:${vcpu} MEM:${gb}GB GPU:${j.resources.gpu}, est=${fmtTime(j.estimatedDuration)}`,
         'info',
       );
       set({

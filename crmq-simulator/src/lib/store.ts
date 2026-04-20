@@ -55,11 +55,34 @@ const stripForStorage = (cfg: CRMQConfig) => ({
 
 const MIGRATION_KEY = 'crmq:migrated-v1';
 
+/**
+ * Detect pre-unit-rename active-config blobs (pool totals / org limits used
+ * `cpu` / `memory` rather than `cpuMillis` / `memoryMiB`). The post-rename
+ * payload always emits at least one `cpuMillis` / `memoryMiB` key on pool
+ * resources, so presence of either is the "new-era" marker. A legacy blob
+ * has `"cpu":<num>` or `"memory":<num>` with neither new key — hydrating
+ * it would produce NaNs downstream.
+ */
+const isLegacyActiveConfig = (raw: string): boolean => {
+  if (raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"')) return false;
+  return /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw);
+};
+
 /** Load the last-active config from localStorage, with one-time migration */
 const loadActiveConfig = (): { cfg: CRMQConfig; orgs: Org[] } | null => {
   try {
     const raw = localStorage.getItem(ACTIVE_KEY);
     if (!raw) return null;
+    if (isLegacyActiveConfig(raw)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[crmq] Dropping legacy active-config at "${ACTIVE_KEY}" ` +
+        `(pre unit-rename; no cpuMillis/memoryMiB keys). ` +
+        `Reverting to defaults.`,
+      );
+      localStorage.removeItem(ACTIVE_KEY);
+      return null;
+    }
     const parsed: SerializedActive = JSON.parse(raw);
     // One-time migration: switch old default to balanced_composite
     if (!localStorage.getItem(MIGRATION_KEY)) {
@@ -74,6 +97,9 @@ const loadActiveConfig = (): { cfg: CRMQConfig; orgs: Org[] } | null => {
       orgs: parsed.orgs,
     };
   } catch {
+    // eslint-disable-next-line no-console
+    console.warn(`[crmq] Failed to parse active-config at "${ACTIVE_KEY}"; clearing.`);
+    try { localStorage.removeItem(ACTIVE_KEY); } catch { /* ignore */ }
     return null;
   }
 };

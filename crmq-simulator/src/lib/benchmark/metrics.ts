@@ -16,6 +16,7 @@
  */
 
 import type { Resources, CRMQConfig, Org, OrgUsageMap } from '../types';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
 
 // ── Raw Event Types (what the DES engine records) ──────────────────────────
 
@@ -157,9 +158,9 @@ const computePoolUtilization = (
     const dt = Math.max(0, nextTime - s.time);
     if (dt === 0) continue;
 
-    const cpuUtil = pool.total.cpu > 0 ? pool.used.cpu / pool.total.cpu : 0;
+    const cpuUtil = pool.total.cpuMillis > 0 ? pool.used.cpuMillis / pool.total.cpuMillis : 0;
     const gpuUtil = pool.total.gpu > 0 ? pool.used.gpu / pool.total.gpu : 0;
-    const memUtil = pool.total.memory > 0 ? pool.used.memory / pool.total.memory : 0;
+    const memUtil = pool.total.memoryMiB > 0 ? pool.used.memoryMiB / pool.total.memoryMiB : 0;
 
     // Fragmentation: highest utilized dimension minus lowest
     const dims = [cpuUtil, memUtil];

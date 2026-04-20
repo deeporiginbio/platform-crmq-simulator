@@ -10,6 +10,7 @@ import { sumResources, sub3, fmtTime } from '@/lib/scheduler';
 import { useConfigStore } from '@/lib/store';
 import { normalizeFormulaType } from '@/lib/config/formulas/registry';
 import { useSimStore } from '@/lib/sim-store';
+import { vcpuFromCpuMillis } from '@/lib/units';
 
 import { ClusterPanel } from '@/components/cluster-panel';
 import { OrgPanel } from '@/components/org-panel';
@@ -155,7 +156,13 @@ export const SimulatorPage = () => {
           TopN: {cfg.scheduler.topN} · Skip: {cfg.scheduler.skipThreshold} · Backfill: {cfg.scheduler.backfillMaxRatio}
         </Text>
         <Text size="xs" ff="monospace" c="grey.7">
-          Pools: {cfg.cluster.pools.map(p => `${p.shortLabel}(${p.total.cpu}C)`).join(', ')}
+          Pools:{' '}
+          {cfg.cluster.pools
+            .map(
+              p =>
+                `${p.shortLabel}(${vcpuFromCpuMillis(p.total.cpuMillis)}C)`
+            )
+            .join(', ')}
         </Text>
         <Text size="xs" ff="monospace" c="grey.7">
           Orgs: {orgs.length}

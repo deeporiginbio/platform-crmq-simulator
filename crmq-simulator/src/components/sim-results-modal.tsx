@@ -6,6 +6,7 @@ import { useMemo } from 'react';
 import { Badge, Box, Group, Modal, Stack, Table, Text } from '@mantine/core';
 import type { CompletedJob, EvictedJob, Org, CRMQConfig } from '@/lib/types';
 import { fmtTime } from '@/lib/scheduler';
+import { vcpuFromCpuMillis } from '@/lib/units';
 
 interface SimResultsModalProps {
   opened: boolean;
@@ -90,7 +91,8 @@ const computeMetrics = (
     });
 
     const totalCpuSeconds = orgCompleted.reduce(
-      (sum, j) => sum + j.resources.cpu * j.estimatedDuration,
+      (sum, j) =>
+        sum + vcpuFromCpuMillis(j.resources.cpuMillis) * j.estimatedDuration,
       0,
     );
 

@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { Box, Button, Group, SimpleGrid, Stack, Text } from '@mantine/core';
 import type { CRMQConfig, Org } from '@/lib/types';
+import { vcpuFromCpuMillis, gbFromMemoryMiB, cpuMillisFromVcpu, memoryMiBFromGb } from '@/lib/units';
 import classes from './config-modal.module.css';
 
 interface ConfigModalProps {
@@ -72,9 +73,19 @@ export const ConfigModal = ({ cfg, orgs, onSave, onClose }: ConfigModalProps) =>
         const poolType = parts[1];
         const dim = parts[2] as 'cpu' | 'memory' | 'gpu';
         if (!next[idx].limits[poolType]) {
-          next[idx].limits[poolType] = { cpu: 0, memory: 0, gpu: 0 };
+          next[idx].limits[poolType] = {
+            cpuMillis: 0,
+            memoryMiB: 0,
+            gpu: 0,
+          };
         }
-        next[idx].limits[poolType][dim] = Number(val);
+        if (dim === 'cpu') {
+          next[idx].limits[poolType].cpuMillis = cpuMillisFromVcpu(Number(val));
+        } else if (dim === 'memory') {
+          next[idx].limits[poolType].memoryMiB = memoryMiBFromGb(Number(val));
+        } else {
+          next[idx].limits[poolType][dim] = Number(val);
+        }
       } else if (field === 'name') {
         next[idx].name = String(val);
       } else if (field === 'priority') {
@@ -144,15 +155,63 @@ export const ConfigModal = ({ cfg, orgs, onSave, onClose }: ConfigModalProps) =>
                   <Box key={pool.type}>
                     <Text className={classes.subheading}>{pool.label}</Text>
                     <SimpleGrid cols={3} spacing="sm">
-                      <CF label="CPU (cores)" value={pool.total.cpu} onChange={(v) => setPath(`cluster.pools.${poolIdx}.total.cpu`, v)} />
-                      <CF label="Memory (GB)" value={pool.total.memory} onChange={(v) => setPath(`cluster.pools.${poolIdx}.total.memory`, v)} />
-                      <CF label="GPU (cards)" value={pool.total.gpu} onChange={(v) => setPath(`cluster.pools.${poolIdx}.total.gpu`, v)} />
+                      <CF
+                        label="CPU (cores)"
+                        value={vcpuFromCpuMillis(pool.total.cpuMillis)}
+                        onChange={(v) =>
+                          setPath(
+                            `cluster.pools.${poolIdx}.total.cpuMillis`,
+                            cpuMillisFromVcpu(v)
+                          )
+                        }
+                      />
+                      <CF
+                        label="Memory (GB)"
+                        value={gbFromMemoryMiB(pool.total.memoryMiB)}
+                        onChange={(v) =>
+                          setPath(
+                            `cluster.pools.${poolIdx}.total.memoryMiB`,
+                            memoryMiBFromGb(v)
+                          )
+                        }
+                      />
+                      <CF
+                        label="GPU (cards)"
+                        value={pool.total.gpu}
+                        onChange={(v) =>
+                          setPath(`cluster.pools.${poolIdx}.total.gpu`, v)
+                        }
+                      />
                     </SimpleGrid>
                     <Text className={classes.subheading} mt="md">Reserved</Text>
                     <SimpleGrid cols={3} spacing="sm">
-                      <CF label="CPU" value={pool.reserved.cpu} onChange={(v) => setPath(`cluster.pools.${poolIdx}.reserved.cpu`, v)} />
-                      <CF label="Memory" value={pool.reserved.memory} onChange={(v) => setPath(`cluster.pools.${poolIdx}.reserved.memory`, v)} />
-                      <CF label="GPU" value={pool.reserved.gpu} onChange={(v) => setPath(`cluster.pools.${poolIdx}.reserved.gpu`, v)} />
+                      <CF
+                        label="CPU"
+                        value={vcpuFromCpuMillis(pool.reserved.cpuMillis)}
+                        onChange={(v) =>
+                          setPath(
+                            `cluster.pools.${poolIdx}.reserved.cpuMillis`,
+                            cpuMillisFromVcpu(v)
+                          )
+                        }
+                      />
+                      <CF
+                        label="Memory"
+                        value={gbFromMemoryMiB(pool.reserved.memoryMiB)}
+                        onChange={(v) =>
+                          setPath(
+                            `cluster.pools.${poolIdx}.reserved.memoryMiB`,
+                            memoryMiBFromGb(v)
+                          )
+                        }
+                      />
+                      <CF
+                        label="GPU"
+                        value={pool.reserved.gpu}
+                        onChange={(v) =>
+                          setPath(`cluster.pools.${poolIdx}.reserved.gpu`, v)
+                        }
+                      />
                     </SimpleGrid>
                   </Box>
                 ))}
@@ -178,9 +237,31 @@ export const ConfigModal = ({ cfg, orgs, onSave, onClose }: ConfigModalProps) =>
                             {pool.label}
                           </Text>
                           <SimpleGrid cols={3} spacing="xs">
-                            <CF label="CPU Limit" value={org.limits[pool.type]?.cpu ?? 0} onChange={(v) => setOrg(i, `limits.${pool.type}.cpu`, v)} />
-                            <CF label="MEM Limit" value={org.limits[pool.type]?.memory ?? 0} onChange={(v) => setOrg(i, `limits.${pool.type}.memory`, v)} />
-                            <CF label="GPU Limit" value={org.limits[pool.type]?.gpu ?? 0} onChange={(v) => setOrg(i, `limits.${pool.type}.gpu`, v)} />
+                            <CF
+                              label="CPU Limit"
+                              value={vcpuFromCpuMillis(
+                                org.limits[pool.type]?.cpuMillis ?? 0
+                              )}
+                              onChange={(v) =>
+                                setOrg(i, `limits.${pool.type}.cpu`, v)
+                              }
+                            />
+                            <CF
+                              label="MEM Limit"
+                              value={gbFromMemoryMiB(
+                                org.limits[pool.type]?.memoryMiB ?? 0
+                              )}
+                              onChange={(v) =>
+                                setOrg(i, `limits.${pool.type}.memory`, v)
+                              }
+                            />
+                            <CF
+                              label="GPU Limit"
+                              value={org.limits[pool.type]?.gpu ?? 0}
+                              onChange={(v) =>
+                                setOrg(i, `limits.${pool.type}.gpu`, v)
+                              }
+                            />
                           </SimpleGrid>
                         </Box>
                       ))}

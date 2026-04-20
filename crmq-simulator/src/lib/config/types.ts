@@ -10,34 +10,52 @@
 
 import type { z } from 'zod';
 import type { Resources, CRMQConfig, Org, QuotaType } from '../types';
+import { cpuMillisFromVcpu, memoryMiBFromGb, vcpuFromCpuMillis } from '../units';
 
 // ── Resource Derivation Ratios ──────────────────────────────────────────────
-// Users configure ONE dimension per pool (CPU or GPU). The rest is derived.
-//   1 CPU  = 4 GB memory
-//   1 GPU  = 4 CPU  (i.e. CPU = GPU × 4)
+// Users configure ONE dimension per pool (vCPU or GPU). The rest is derived.
+//   1 vCPU = 4 GB memory
+//   1 GPU  = 4 vCPU  (i.e. vCPU = GPU × 4)
+//
+// Note: these ratios describe the *UI-facing* dimensions (vCPU, GB, GPU).
+// Internally the model stores cpuMillis and memoryMiB; see src/lib/units.ts.
 
-export const MEMORY_PER_CPU = 4;    // 1 CPU → 4 GB
-export const CPU_PER_GPU = 4;       // 1 GPU → 4 CPU
+export const MEMORY_GB_PER_VCPU = 4;    // 1 vCPU → 4 GB
+export const VCPU_PER_GPU = 4;          // 1 GPU  → 4 vCPU
 
 /**
  * Derive full Resources from the user-configured dimension.
- *   quotaType 'cpu' → user sets CPU; memory = CPU × 4; gpu = 0
- *   quotaType 'gpu' → user sets GPU; cpu = GPU × 4; memory = cpu × 4
+ *   quotaType 'cpu' → user sets vCPU; memory = vCPU × 4 GB; gpu = 0
+ *   quotaType 'gpu' → user sets GPU; vCPU = GPU × 4; memory = vCPU × 4 GB
+ *
+ * Takes UI-facing values (vCPU or GPU count) and returns canonical model
+ * Resources (cpuMillis, memoryMiB, gpu). All model values are stored as
+ * integers via the units.ts helpers.
  */
 export const deriveResources = (quotaType: QuotaType, value: number): Resources => {
   if (quotaType === 'gpu') {
-    const cpu = value * CPU_PER_GPU;
-    return { cpu, memory: cpu * MEMORY_PER_CPU, gpu: value };
+    const vcpu = value * VCPU_PER_GPU;
+    return {
+      cpuMillis: cpuMillisFromVcpu(vcpu),
+      memoryMiB: memoryMiBFromGb(vcpu * MEMORY_GB_PER_VCPU),
+      gpu: value,
+    };
   }
-  // cpu pool — no GPU at all
-  return { cpu: value, memory: value * MEMORY_PER_CPU, gpu: 0 };
+  // cpu pool — no GPU at all. `value` here is UI vCPU.
+  return {
+    cpuMillis: cpuMillisFromVcpu(value),
+    memoryMiB: memoryMiBFromGb(value * MEMORY_GB_PER_VCPU),
+    gpu: 0,
+  };
 };
 
 /**
- * Extract the user-configurable value from a Resources object given the pool quotaType.
+ * Extract the user-configurable value from a Resources object given the pool
+ * quotaType. Returns UI-facing units: vCPU (decimal) for 'cpu', GPU count for
+ * 'gpu'.
  */
 export const getUserValue = (quotaType: QuotaType, resources: Resources): number =>
-  quotaType === 'gpu' ? resources.gpu : resources.cpu;
+  quotaType === 'gpu' ? resources.gpu : vcpuFromCpuMillis(resources.cpuMillis);
 
 /**
  * Label for the user-configurable dimension.
@@ -90,7 +108,8 @@ export interface DrfFairShareParams {
  *        + wLoad    × (1 − org_cpus_in_pool / pool_total_cpu)
  *        + wCpuHrs  × (1 − min(1, log(1+cpu_hours) / log(1+maxCpuHours)))
  *
- * where cpu_hours = cpu_requested × estimatedDuration (in hours).
+ * where cpu_hours = vcpu_requested × estimatedDuration (in hours)
+ * and maxCpuHours is expressed in vCPU·hours (default 1000).
  * Aging uses a blended curve: a linear floor (10%) ensures aging
  * is never truly zero, while the quadratic body (90%) keeps the
  * "slow start, aggressive end" shape. Full boost at agingHorizon
@@ -105,7 +124,7 @@ export interface BalancedCompositeParams {
   agingHorizon: number;   // wait time for full boost in seconds (default 21600 = 6h)
   agingExponent: number;  // curve shape: >1 = slow start (default 2 = quadratic)
   agingFloor: number;     // linear floor fraction (default 0.10 = 10%)
-  maxCpuHours: number;    // normalization ceiling for cpu_hours (default 1000)
+  maxCpuHours: number;    // log-normalization ceiling in vCPU·hours (default 1000, matching platform)
 }
 
 /**

@@ -6,6 +6,7 @@ import { Box, Badge, Collapse, Divider, Group, Stack, Table, Text, Tooltip } fro
 import { useState } from 'react';
 import { SCENARIO_PRESETS } from '@/lib/benchmark';
 import type { ScenarioPreset, ArrivalPattern, JobSizeDistribution } from '@/lib/benchmark';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -435,10 +436,12 @@ const PeriodicMixInfo = ({ preset }: { preset: ScenarioPreset }) => {
   const orgSummary: Record<string, { jobs: number; totalCpu: number; totalMemory: number; templates: string[] }> = {};
   for (const t of templates) {
     const count = Math.floor(wc.durationSeconds / t.intervalSeconds);
-    if (!orgSummary[t.orgId]) orgSummary[t.orgId] = { jobs: 0, totalCpu: 0, totalMemory: 0, templates: [] };
+    if (!orgSummary[t.orgId]) {
+      orgSummary[t.orgId] = { jobs: 0, totalCpu: 0, totalMemory: 0, templates: [] };
+    }
     orgSummary[t.orgId].jobs += count;
-    orgSummary[t.orgId].totalCpu += count * t.cpu;
-    orgSummary[t.orgId].totalMemory += count * t.memory;
+    orgSummary[t.orgId].totalCpu += count * vcpuFromCpuMillis(t.cpuMillis);
+    orgSummary[t.orgId].totalMemory += count * gbFromMemoryMiB(t.memoryMiB);
     orgSummary[t.orgId].templates.push(t.name);
   }
 
@@ -467,7 +470,9 @@ const PeriodicMixInfo = ({ preset }: { preset: ScenarioPreset }) => {
           <Table.Tbody>
             {templates.map(t => {
               const count = Math.floor(wc.durationSeconds / t.intervalSeconds);
-              const cpuHours = (count * t.cpu * t.durationSeconds / 3600).toFixed(0);
+              const cpuHours = (
+                count * vcpuFromCpuMillis(t.cpuMillis) * t.durationSeconds / 3600
+              ).toFixed(0);
               return (
                 <Table.Tr key={t.name}>
                   <Table.Td><Text size="xs" fw={500}>{t.name}</Text></Table.Td>
@@ -477,8 +482,16 @@ const PeriodicMixInfo = ({ preset }: { preset: ScenarioPreset }) => {
                       t.orgId === 'org-beta' ? 'green' : 'orange'
                     }>{t.orgId}</Badge>
                   </Table.Td>
-                  <Table.Td><Text size="xs" ff="monospace">{t.cpu}</Text></Table.Td>
-                  <Table.Td><Text size="xs" ff="monospace">{t.memory} GB</Text></Table.Td>
+                  <Table.Td>
+                    <Text size="xs" ff="monospace">
+                      {vcpuFromCpuMillis(t.cpuMillis)}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" ff="monospace">
+                      {gbFromMemoryMiB(t.memoryMiB)} GB
+                    </Text>
+                  </Table.Td>
                   <Table.Td><Text size="xs" ff="monospace">{t.gpu}</Text></Table.Td>
                   <Table.Td><Text size="xs" ff="monospace">{fmtDuration(t.durationSeconds)}</Text></Table.Td>
                   <Table.Td><Text size="xs" ff="monospace">{fmtDuration(t.intervalSeconds)}</Text></Table.Td>

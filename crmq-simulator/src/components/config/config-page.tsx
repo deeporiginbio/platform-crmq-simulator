@@ -4,9 +4,10 @@
 
 import { useState, useMemo } from 'react';
 import { Box, Button, Group, Stack, Stepper, Text, Alert } from '@mantine/core';
-import type { CRMQConfig, Org } from '@/lib/types';
+import type { CRMQConfig, Org, Resources } from '@/lib/types';
 import { useConfigForm, buildInitialConfig } from '@/lib/config';
 import { useConfigValidation } from '@/lib/config/use-config-validation';
+import { cpuMillisFromVcpu, memoryMiBFromGb } from '@/lib/units';
 import { FormulaStep } from './formula-step';
 import { OrgQuotasStep } from './org-quotas-step';
 import { ReviewStep } from './review-step';
@@ -55,7 +56,7 @@ export const ConfigPage = ({ config, orgs, onApply, onCancel }: ConfigPageProps)
       const oq = form.state.orgQuotas.find(q => q.orgId === org.id);
       if (!oq) return org;
 
-      const limits: Record<string, { cpu: number; memory: number; gpu: number }> = {};
+      const limits: Record<string, Resources> = {};
       for (const pool of form.state.cluster.pools) {
         const lim = oq.limits[pool.type];
         if (!lim || lim.mode === 'uncapped') {
@@ -64,8 +65,12 @@ export const ConfigPage = ({ config, orgs, onApply, onCancel }: ConfigPageProps)
           limits[pool.type] = { ...lim.resources };
         } else if (lim.mode === 'percentage') {
           limits[pool.type] = {
-            cpu: Math.round(pool.total.cpu * lim.pct.cpu / 100),
-            memory: Math.round(pool.total.memory * lim.pct.memory / 100),
+            cpuMillis: Math.round(
+              pool.total.cpuMillis * lim.pct.cpuMillis / 100
+            ),
+            memoryMiB: Math.round(
+              pool.total.memoryMiB * lim.pct.memoryMiB / 100
+            ),
             gpu: Math.round(pool.total.gpu * lim.pct.gpu / 100),
           };
         }

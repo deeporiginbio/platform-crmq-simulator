@@ -7,6 +7,7 @@ import { Box, Group, ScrollArea, Stack, Text } from '@mantine/core';
 import type { RunningJob, CRMQConfig } from '@/lib/types';
 import { fmtTime } from '@/lib/scheduler';
 import { getJobPoolType, getPoolMeta } from '@/lib/types';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 import classes from './active-panel.module.css';
 
 interface ActivePanelProps {
@@ -46,8 +47,12 @@ export const ActivePanel = memo(({ jobs, simTime, cfg }: ActivePanelProps) => {
                       <Text size="xs" c="green.6" ff="monospace">{fmtTime(j.remainingDuration)}</Text>
                     </Group>
                     <Group gap={8}>
-                      <Text size="xs" c="dimmed">CPU:{j.resources.cpu}</Text>
-                      <Text size="xs" c="dimmed">MEM:{j.resources.memory}GB</Text>
+                      <Text size="xs" c="dimmed">
+                        CPU:{vcpuFromCpuMillis(j.resources.cpuMillis)}
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        MEM:{gbFromMemoryMiB(j.resources.memoryMiB)}GB
+                      </Text>
                       <Text size="xs" c="dimmed">GPU:{j.resources.gpu}</Text>
                       <Text size="xs" c="dimmed" ml="auto">{pct}%</Text>
                     </Group>

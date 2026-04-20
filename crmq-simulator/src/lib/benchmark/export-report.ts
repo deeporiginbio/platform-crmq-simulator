@@ -28,6 +28,7 @@ import type {
   ArrivalPattern,
   JobSizeDistribution,
 } from './traffic';
+import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
 
 // Re-use the store type locally
 interface MultiScenarioEntry {
@@ -1637,7 +1638,8 @@ export const exportMarkdownReport = (
         );
         lines.push(
           `| ${t.name} | ${t.orgId} ` +
-          `| ${t.cpu} | ${t.memory} ` +
+          `| ${vcpuFromCpuMillis(t.cpuMillis)} | ` +
+          `${gbFromMemoryMiB(t.memoryMiB)} ` +
           `| ${t.gpu} ` +
           `| ${fmtSec(t.durationSeconds)} ` +
           `| every ${fmtSec(t.intervalSeconds)} ` +

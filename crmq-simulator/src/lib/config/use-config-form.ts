@@ -188,7 +188,14 @@ const reducer = (state: SchedulingPolicyConfig, action: ConfigAction): Schedulin
               ...oq.limits,
               [action.poolType]: {
                 mode: 'percentage' as const,
-                pct: { cpu: action.pctValue, memory: action.pctValue, gpu: action.pctValue },
+                // Percentage values are unit-agnostic [0,100]; stored under
+                // the canonical cpuMillis/memoryMiB slot names for shape
+                // consistency with the absolute-limit Resources schema.
+                pct: {
+                  cpuMillis: action.pctValue,
+                  memoryMiB: action.pctValue,
+                  gpu: action.pctValue,
+                },
               },
             },
           };

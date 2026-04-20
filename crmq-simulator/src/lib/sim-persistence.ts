@@ -49,20 +49,47 @@ export const persistSimState = (state: SimSnapshot | null) => {
 };
 
 /**
+ * Detect pre-unit-rename simulation snapshots (`cpu`/`memory` on Resources).
+ * Post-rename snapshots always emit `cpuMillis` / `memoryMiB` somewhere
+ * (jobs' resources, orgUsage, etc.). Legacy snapshots have `"cpu":<num>`
+ * or `"memory":<num>` and no `cpuMillis` / `memoryMiB` markers.
+ */
+const isLegacySimSnapshot = (raw: string): boolean => {
+  if (raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"')) return false;
+  return /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw);
+};
+
+/**
  * Load simulation state from localStorage.
- * Returns null if nothing saved or parse fails.
+ * Returns null if nothing saved, parse fails, or the blob is stale
+ * (pre unit-rename). On stale data the key is cleared.
  */
 export const loadSimState = (): SimSnapshot | null => {
   try {
     const raw = localStorage.getItem(SIM_KEY);
     if (!raw) return null;
+    if (isLegacySimSnapshot(raw)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[crmq] Dropping legacy simulation snapshot at "${SIM_KEY}" ` +
+        `(pre unit-rename; no cpuMillis/memoryMiB keys).`,
+      );
+      localStorage.removeItem(SIM_KEY);
+      return null;
+    }
     const parsed = JSON.parse(raw) as SimSnapshot;
     // Basic sanity check
     if (typeof parsed.simTime !== 'number' || !Array.isArray(parsed.queue)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[crmq] Malformed sim snapshot at "${SIM_KEY}"; clearing.`);
+      try { localStorage.removeItem(SIM_KEY); } catch { /* ignore */ }
       return null;
     }
     return parsed;
   } catch {
+    // eslint-disable-next-line no-console
+    console.warn(`[crmq] Failed to parse sim snapshot at "${SIM_KEY}"; clearing.`);
+    try { localStorage.removeItem(SIM_KEY); } catch { /* ignore */ }
     return null;
   }
 };
