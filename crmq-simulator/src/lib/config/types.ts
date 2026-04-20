@@ -108,7 +108,8 @@ export interface DrfFairShareParams {
  *        + wLoad    × (1 − org_cpus_in_pool / pool_total_cpu)
  *        + wCpuHrs  × (1 − min(1, log(1+cpu_hours) / log(1+maxCpuHours)))
  *
- * where cpu_hours = cpu_requested × estimatedDuration (in hours).
+ * where cpu_hours = vcpu_requested × estimatedDuration (in hours)
+ * and maxCpuHours is expressed in vCPU·hours (default 1000).
  * Aging uses a blended curve: a linear floor (10%) ensures aging
  * is never truly zero, while the quadratic body (90%) keeps the
  * "slow start, aggressive end" shape. Full boost at agingHorizon
@@ -123,7 +124,7 @@ export interface BalancedCompositeParams {
   agingHorizon: number;   // wait time for full boost in seconds (default 21600 = 6h)
   agingExponent: number;  // curve shape: >1 = slow start (default 2 = quadratic)
   agingFloor: number;     // linear floor fraction (default 0.10 = 10%)
-  maxCpuHours: number;    // normalization ceiling for cpu_hours (default 1000)
+  maxCpuHours: number;    // log-normalization ceiling in vCPU·hours (default 1000, matching platform)
 }
 
 /**

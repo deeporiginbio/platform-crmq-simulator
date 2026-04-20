@@ -240,7 +240,7 @@ const balancedComposite: ScoringFormula = {
     const AGING_HORIZON = 21600;   // 6 h — full boost at this wait
     const AGING_EXPONENT = 2;      // quadratic: slow start, steep end
     const AGING_FLOOR = 0.10;      // 10% linear floor — never fully zero
-    const MAX_CPU_HOURS = 1000;    // normalization ceiling
+    const MAX_CPU_HOURS = 1000;    // vCPU·hours — matches platform default
     const maxPriority = 10;
 
     // 1. Normalized org priority [0, 1]

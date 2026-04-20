@@ -103,7 +103,7 @@ const computeBreakdown = (
       const AGING_HORIZON = 21600;
       const AGING_EXPONENT = 2;
       const AGING_FLOOR = 0.10;
-      const MAX_CPU_HOURS = 1000;
+      const MAX_CPU_HOURS = 1000;   // vCPU·hours — matches platform default
       const maxPriority = 10;
 
       const orgPriorityNorm = priority / maxPriority;

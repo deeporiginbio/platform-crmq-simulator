@@ -305,8 +305,8 @@ const BalancedCompositeForm = ({
         decimalScale={2}
       />
       <NumberInput
-        label="MAX_CPU_HOURS"
-        description="Normalization ceiling for cpu_hours"
+        label="MAX_CPU_HOURS (vCPU·hours)"
+        description="Log-normalization ceiling for cpu_hours (vCPU × duration_hrs). Default 1000 vCPU·hours matches platform."
         size="xs"
         value={params.maxCpuHours}
         onChange={(v) => onChange('maxCpuHours', Number(v))}
