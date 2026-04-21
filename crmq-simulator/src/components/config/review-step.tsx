@@ -73,8 +73,8 @@ export const ReviewStep = ({ config, orgs, errors, warnings }: ReviewStepProps) 
             <Text size="sm" fw={600} ff="monospace">{config.scheduler.topN}</Text>
           </Box>
           <Box>
-            <Text size="xs" c="dimmed">Skip Threshold</Text>
-            <Text size="sm" fw={600} ff="monospace">{config.scheduler.skipThreshold}</Text>
+            <Text size="xs" c="dimmed">Reservation Threshold</Text>
+            <Text size="sm" fw={600} ff="monospace">{config.scheduler.reservationThresholdSec}s</Text>
           </Box>
           <Box>
             <Text size="xs" c="dimmed">Backfill Max Ratio</Text>

@@ -153,10 +153,14 @@ const drfFairShare: ScoringFormula = {
         const used =
           orgUsage[job.orgId]?.[poolType]
           ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+        // Platform parity: availableDimension(total, externalUsage, reserved).
+        // Subtract both `externalUsage` (other tenants on the pool) and
+        // `reserved` (system overhead) from the capacity denominator.
+        const ext = pool.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
         const total: Resources = {
-          cpuMillis: pool.total.cpuMillis - pool.reserved.cpuMillis,
-          memoryMiB: pool.total.memoryMiB - pool.reserved.memoryMiB,
-          gpu: pool.total.gpu - pool.reserved.gpu,
+          cpuMillis: Math.max(0, pool.total.cpuMillis - ext.cpuMillis - pool.reserved.cpuMillis),
+          memoryMiB: Math.max(0, pool.total.memoryMiB - ext.memoryMiB - pool.reserved.memoryMiB),
+          gpu:       Math.max(0, pool.total.gpu       - ext.gpu       - pool.reserved.gpu),
         };
         const cpuShare =
           total.cpuMillis > 0 ? used.cpuMillis / total.cpuMillis : 0;
@@ -269,9 +273,20 @@ const balancedComposite: ScoringFormula = {
         const used =
           orgUsage[job.orgId]?.[poolType]
           ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
-        orgLoad = pool.total.cpuMillis > 0
-          ? Math.min(1, used.cpuMillis / pool.total.cpuMillis)
-          : 0;
+        // Platform parity: use availableDimension(total, externalUsage, reserved)
+        // as the load-ratio denominator. Subtracting reserved and external
+        // consumers gives a truer picture of the capacity CRMQ can actually
+        // schedule into.
+        const ext = pool.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+        const effectiveCpu = Math.max(
+          0,
+          pool.total.cpuMillis - ext.cpuMillis - pool.reserved.cpuMillis,
+        );
+        orgLoad = effectiveCpu > 0
+          ? Math.min(1, used.cpuMillis / effectiveCpu)
+          // Numerator > 0 with denominator = 0 means the pool is fully
+          // reserved/external — treat as saturated.
+          : used.cpuMillis > 0 ? 1 : 0;
       }
     }
 

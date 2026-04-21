@@ -49,6 +49,8 @@ interface SerializablePool {
   quotaType: 'cpu' | 'gpu';
   total: Resources;
   reserved: Resources;
+  /** Optional on the wire for backward-compat; defaulted to zero on hydrate. */
+  externalUsage?: Resources;
 }
 
 /** Serializable version of CRMQConfig (pools stripped of routeWhen) */
@@ -136,7 +138,13 @@ const stripConfig = (cfg: CRMQConfig): SerializableConfig => ({
  */
 export const hydrateConfig = (raw: SerializableConfig): CRMQConfig => ({
   scoring: { ...raw.scoring },
-  scheduler: { ...raw.scheduler },
+  scheduler: {
+    ...raw.scheduler,
+    // Backward-compat: configs persisted before wall-clock reservation
+    // didn't carry `reservationThresholdSec`. Default to 600s (platform parity)
+    // *only* when missing from the persisted payload.
+    reservationThresholdSec: raw.scheduler.reservationThresholdSec ?? 600,
+  },
   cluster: {
     pools: raw.cluster.pools.map((sp) => {
       // Try to find the matching default pool for its routeWhen
@@ -144,7 +152,9 @@ export const hydrateConfig = (raw: SerializableConfig): CRMQConfig => ({
       const routeWhen = defaultPool?.routeWhen ?? ((job: { resources: Resources }) =>
         sp.quotaType === 'gpu' ? job.resources.gpu > 0 : job.resources.gpu === 0
       );
-      return { ...sp, routeWhen };
+      // Backward-compat: pools persisted before #5 didn't carry externalUsage.
+      const externalUsage = sp.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+      return { ...sp, externalUsage, routeWhen };
     }),
   },
   ttlDefault: (raw.ttlDefault == null || raw.ttlDefault <= 0) ? Infinity : raw.ttlDefault,

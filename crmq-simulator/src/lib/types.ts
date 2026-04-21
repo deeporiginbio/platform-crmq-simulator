@@ -74,7 +74,15 @@ export interface Job {
   estimatedDuration: number; // seconds
   ttl: number;               // seconds — time-to-live in queue (§1.2)
   enqueuedAt: number;        // sim-time when enqueued
-  skipCount: number;         // times skipped by scheduler (§3.4)
+  skipCount: number;         // times skipped by scheduler (§3.4) — retained for diagnostics
+  /**
+   * Sim-time of the first capacity-gate failure. Used by the wall-clock
+   * reservation trigger (§3.4 platform parity): reservation mode activates
+   * when `now - firstGatedAt >= scheduler.reservationThresholdSec`.
+   * Cleared (undefined) whenever the job is admitted or when it clears Gate 2
+   * without being skipped.
+   */
+  firstGatedAt?: number | null;
   clusterId?: string | null; // workflow affinity (§2.3)
 }
 
@@ -90,6 +98,7 @@ export const jobSchema = z.object({
   ttl: z.number(),
   enqueuedAt: z.number(),
   skipCount: z.number(),
+  firstGatedAt: z.number().nullable().optional(),
   clusterId: z.string().nullable().optional(),
 });
 
@@ -127,14 +136,25 @@ export const scoringConfigSchema = z.object({
 });
 
 export interface SchedulerConfig {
-  topN: number;              // items evaluated per tick (§3.2)
-  skipThreshold: number;     // skip_count > X → reservation mode (§3.4)
-  backfillMaxRatio: number;  // backfill candidate duration ≤ ratio × blocked (§3.3)
+  topN: number;                      // items evaluated per tick (§3.2)
+  /**
+   * Retained for diagnostics and legacy displays.
+   * Reservation-mode activation is driven by `reservationThresholdSec`
+   * (wall-clock, platform parity), not by skipCount anymore.
+   */
+  skipThreshold: number;
+  /**
+   * Wall-clock seconds a head-of-queue job must remain capacity-gated before
+   * reservation mode engages (§3.4). Platform parity: 600s (20s cron × 30 skips).
+   */
+  reservationThresholdSec: number;
+  backfillMaxRatio: number;          // backfill candidate duration ≤ ratio × blocked (§3.3)
 }
 
 export const schedulerConfigSchema = z.object({
   topN: z.number(),
   skipThreshold: z.number(),
+  reservationThresholdSec: z.number().min(0),
   backfillMaxRatio: z.number(),
 });
 
@@ -160,6 +180,14 @@ export interface ResourcePool {
   quotaType: QuotaType;      // what dimension the user configures
   total: Resources;
   reserved: Resources;
+  /**
+   * External (non-CRMQ) consumers of the same physical pool — e.g. other
+   * tenants or jobs booked outside the queue. Subtracted from `total`
+   * alongside `reserved` when computing the effective load-ratio denominator
+   * (platform parity: `availableDimension(total, externalUsage, reserved)`).
+   * Defaults to zero in the simulator; platform supplies real values.
+   */
+  externalUsage: Resources;
   /** Routing predicate: if true, jobs matching this condition go to this pool.
    *  Evaluated in order — first pool whose `routeWhen` returns true wins. */
   routeWhen: (job: { resources: Resources }) => boolean;
@@ -173,6 +201,7 @@ export const resourcePoolSchema = z.object({
   quotaType: z.enum(['cpu', 'gpu']),
   total: resourcesSchema,
   reserved: resourcesSchema,
+  externalUsage: resourcesSchema,
   // routeWhen is a function — not serializable via zod, validated at runtime
 });
 

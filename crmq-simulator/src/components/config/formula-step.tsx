@@ -11,11 +11,19 @@ import classes from './formula-step.module.css';
 
 interface FormulaStepProps {
   formulaConfig: FormulaConfig;
-  schedulerConfig: { topN: number; skipThreshold: number; backfillMaxRatio: number };
+  schedulerConfig: {
+    topN: number;
+    skipThreshold: number;
+    reservationThresholdSec: number;
+    backfillMaxRatio: number;
+  };
   ttlDefault: number;
   onSetFormulaType: (type: FormulaType) => void;
   onSetFormulaParam: (key: string, value: number | boolean | string) => void;
-  onSetSchedulerParam: (key: 'topN' | 'skipThreshold' | 'backfillMaxRatio', value: number) => void;
+  onSetSchedulerParam: (
+    key: 'topN' | 'skipThreshold' | 'reservationThresholdSec' | 'backfillMaxRatio',
+    value: number,
+  ) => void;
   onSetTtlDefault: (value: number) => void;
 }
 
@@ -416,13 +424,14 @@ export const FormulaStep = ({
             max={100}
           />
           <NumberInput
-            label="Skip Threshold"
-            description="Skip count → reservation mode"
+            label="Reservation Threshold (s)"
+            description="Wall-clock capacity-gate time → reservation mode"
             size="xs"
-            value={schedulerConfig.skipThreshold}
-            onChange={(v) => onSetSchedulerParam('skipThreshold', Number(v))}
-            min={1}
-            max={50}
+            value={schedulerConfig.reservationThresholdSec}
+            onChange={(v) => onSetSchedulerParam('reservationThresholdSec', Number(v))}
+            min={0}
+            max={3600}
+            step={30}
           />
           <NumberInput
             label="Backfill Max Ratio"

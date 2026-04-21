@@ -54,9 +54,12 @@ export const DEFAULT_CONFIG: CRMQConfig = {
     agingFactor:       5,
   },
   scheduler: {
-    topN:               10,
-    skipThreshold:       3,
-    backfillMaxRatio:  0.5,
+    topN:                        10,
+    // Retained for diagnostics only; reservation activation is wall-clock driven.
+    skipThreshold:                3,
+    // Platform parity: 20s cron × 30 skips = 600s wall-clock before reservation.
+    reservationThresholdSec:    600,
+    backfillMaxRatio:           0.5,
   },
   cluster: {
     pools: [
@@ -78,6 +81,12 @@ export const DEFAULT_CONFIG: CRMQConfig = {
           memoryMiB: memoryMiBFromGb(2),
           gpu: 0,
         },
+        // Non-CRMQ tenants sharing the pool (platform: externalUsage). Zero by default.
+        externalUsage: {
+          cpuMillis: 0,
+          memoryMiB: 0,
+          gpu: 0,
+        },
         routeWhen: (job) => job.resources.gpu === 0,
       },
       {
@@ -96,6 +105,12 @@ export const DEFAULT_CONFIG: CRMQConfig = {
         reserved: {
           cpuMillis: cpuMillisFromVcpu(1),
           memoryMiB: memoryMiBFromGb(1),
+          gpu: 0,
+        },
+        // Non-CRMQ tenants sharing the pool (platform: externalUsage). Zero by default.
+        externalUsage: {
+          cpuMillis: 0,
+          memoryMiB: 0,
           gpu: 0,
         },
         routeWhen: (job) => job.resources.gpu > 0,
@@ -288,6 +303,21 @@ export const getPool = (config: CRMQConfig, poolType: string): ResourcePool => {
   return pool;
 };
 
+/**
+ * Platform parity: `availableDimension(total, externalUsage, reserved)` — the
+ * effective capacity pool that CRMQ can dispatch into, before subtracting
+ * CRMQ's own in-flight jobs. See
+ *   platform/apps/tools-service/.../balanced-composite-scoring.strategy.ts
+ */
+export const poolEffectiveTotal = (pool: ResourcePool): Resources => {
+  const externalUsage = pool.externalUsage ?? { ...ZERO };
+  return {
+    cpuMillis: Math.max(0, pool.total.cpuMillis - externalUsage.cpuMillis - pool.reserved.cpuMillis),
+    memoryMiB: Math.max(0, pool.total.memoryMiB - externalUsage.memoryMiB - pool.reserved.memoryMiB),
+    gpu:       Math.max(0, pool.total.gpu       - externalUsage.gpu       - pool.reserved.gpu),
+  };
+};
+
 export const getPoolAvailability = (
   config: CRMQConfig,
   activeJobs: RunningJob[],
@@ -296,7 +326,8 @@ export const getPoolAvailability = (
   const pool = getPool(config, poolType);
   const poolJobs = activeJobs.filter(j => getJobPoolType(j, config) === poolType);
   const inUse = sumResources(poolJobs);
-  return sub3(sub3(pool.total, pool.reserved), inUse);
+  // Platform parity: effective capacity = total − externalUsage − reserved − CRMQ in-flight.
+  return sub3(poolEffectiveTotal(pool), inUse);
 };
 
 export const getAvailabilityPerPool = (
@@ -438,11 +469,14 @@ export const runScheduler = (
     logFn?.(now, '🔓 Reservation mode lifted — target no longer in queue', 'info');
   }
 
-  let dispatched = false;
+  let dispatchedCount = 0;
 
+  // §3.2 / §3.4 platform parity: attempt every topN candidate this tick, in
+  // score order. Each admission decrements availByPool so subsequent
+  // candidates see real residual capacity. Jobs that fail a gate are left
+  // in the queue with their skipCount / firstGatedAt bookkeeping updated;
+  // we do NOT early-exit after the first successful dispatch.
   for (const job of topN) {
-    if (dispatched) break;
-
     const org = orgs.find(o => o.id === job.orgId);
     const poolType = getJobPoolType(job, config);
     const pool = config.cluster.pools.find(p => p.type === poolType);
@@ -475,13 +509,30 @@ export const runScheduler = (
     const capOk = fits(job.resources, avail);
     if (!capOk) {
       const newSkip = (job.skipCount || 0) + 1;
-      nq = nq.map(j => j.id === job.id ? { ...j, skipCount: newSkip } : j);
-      logFn?.(now, `⛔ Gate 2 FAIL | ${job.name} [${job.id}] — ${poolType} pool capacity insufficient. skip_count=${newSkip}/${sch.skipThreshold}`, 'warn');
+      // §3.4 wall-clock reservation trigger (platform parity: 600s default).
+      // `firstGatedAt` captures the first sim-time at which this job was
+      // capacity-gated and survives across ticks; reservation mode engages
+      // once the job has been gated for `reservationThresholdSec` seconds.
+      const firstGatedAt = job.firstGatedAt ?? now;
+      const gatedFor = now - firstGatedAt;
+      nq = nq.map(j => j.id === job.id ? { ...j, skipCount: newSkip, firstGatedAt } : j);
+      logFn?.(
+        now,
+        `⛔ Gate 2 FAIL | ${job.name} [${job.id}] — ${poolType} pool capacity insufficient. ` +
+        `gated_for=${fmtTime(gatedFor)}/${fmtTime(sch.reservationThresholdSec)} (skip_count=${newSkip})`,
+        'warn',
+      );
 
-      // §3.4 Large Task Guarantees
-      if (newSkip > sch.skipThreshold && !nr) {
+      // §3.4 Large Task Guarantees — wall-clock, not skip-count.
+      if (gatedFor >= sch.reservationThresholdSec && !nr) {
         nr = true; nt = job.id;
-        logFn?.(now, `🔒 RESERVATION MODE ON | ${job.name} [${job.id}] skipped ${newSkip}× — blocking new dispatches`, 'error');
+        logFn?.(
+          now,
+          `🔒 RESERVATION MODE ON | ${job.name} [${job.id}] capacity-gated for ` +
+          `${fmtTime(gatedFor)} ≥ threshold ${fmtTime(sch.reservationThresholdSec)} ` +
+          `— blocking new dispatches`,
+          'error',
+        );
       }
 
       // §3.3 Backfilling
@@ -518,7 +569,10 @@ export const runScheduler = (
             bfOrgUsedInPool.memoryMiB + bf.resources.memoryMiB <= bfLimits.memoryMiB &&
             bfOrgUsedInPool.gpu       + bf.resources.gpu       <= bfLimits.gpu
           );
-          if (bfOrgOk) {
+          // Capacity may have dropped after admitting earlier candidates
+          // this tick — re-check fits against the *current* availability.
+          const bfFits = fits(bf.resources, availByPool[bf_poolType]);
+          if (bfOrgOk && bfFits) {
             na = [...na, { ...bf, startedAt: now, remainingDuration: bf.estimatedDuration }];
             nq = nq.filter(j => j.id !== bf.id);
             const bfDispPools = { ...bfOrgPools };
@@ -526,8 +580,9 @@ export const runScheduler = (
             no = { ...no, [bf.orgId]: bfDispPools };
             availByPool[bf_poolType] = sub3(availByPool[bf_poolType], bf.resources);
             logFn?.(now, `🔀 BACKFILL | ${bf.name} [${bf.id}] — fits gap, dur ${fmtTime(bf.estimatedDuration)} ≤ ${sch.backfillMaxRatio * 100}% of blocked`, 'success');
-            dispatched = true;
-            break;
+            dispatchedCount += 1;
+            // Allow multiple backfills per blocked top-N job — each helps
+            // keep utilization up while we wait for the blocker to fit.
           }
         }
       }
@@ -541,6 +596,8 @@ export const runScheduler = (
     const gb = gbFromMemoryMiB(job.resources.memoryMiB);
     logFn?.(now, `✅ DISPATCH | ${job.name} [${job.id}] → ${poolType} — score=${Math.round(job._score).toLocaleString()}, wait=${fmtTime(wait)}, CPU:${vcpu} MEM:${gb}GB GPU:${job.resources.gpu}`, 'success');
 
+    // Dispatching removes the job from the queue; `firstGatedAt` tracking
+    // is implicitly cleared because we filter the job out of `nq` here.
     na = [...na, { ...job, startedAt: now, remainingDuration: job.estimatedDuration }];
     nq = nq.filter(j => j.id !== job.id);
     const dispOrgPools = { ...(no[job.orgId] ?? zeroPoolUsage(config)) };
@@ -552,10 +609,17 @@ export const runScheduler = (
       nr = false; nt = null;
       logFn?.(now, '🔓 Reservation mode cleared — target dispatched', 'info');
     }
-    dispatched = true;
+    dispatchedCount += 1;
   }
 
-  return { queue: nq, active: na, orgUsage: no, reservMode: nr, reservTarget: nt, dispatched };
+  return {
+    queue: nq,
+    active: na,
+    orgUsage: no,
+    reservMode: nr,
+    reservTarget: nt,
+    dispatched: dispatchedCount > 0,
+  };
 };
 
 

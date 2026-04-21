@@ -174,7 +174,10 @@ export interface SchedulingPolicyConfig {
   formula: FormulaConfig;
   scheduler: {
     topN: number;
+    /** Retained for diagnostics/display. No longer drives reservation. */
     skipThreshold: number;
+    /** Wall-clock seconds of capacity gating before reservation mode engages. */
+    reservationThresholdSec: number;
     backfillMaxRatio: number;
   };
   cluster: {

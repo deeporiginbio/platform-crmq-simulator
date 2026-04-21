@@ -37,7 +37,7 @@ type ConfigAction =
   // Scheduler
   | {
       type: 'SET_SCHEDULER_PARAM';
-      key: 'topN' | 'skipThreshold' | 'backfillMaxRatio';
+      key: 'topN' | 'skipThreshold' | 'reservationThresholdSec' | 'backfillMaxRatio';
       value: number;
     }
   | { type: 'SET_TTL_DEFAULT'; value: number }
@@ -214,7 +214,7 @@ export const useConfigForm = (initialConfig: SchedulingPolicyConfig) => {
 
   const setSchedulerParam = useCallback(
     (
-      key: 'topN' | 'skipThreshold' | 'backfillMaxRatio',
+      key: 'topN' | 'skipThreshold' | 'reservationThresholdSec' | 'backfillMaxRatio',
       value: number,
     ) => {
       dispatch({ type: 'SET_SCHEDULER_PARAM', key, value });

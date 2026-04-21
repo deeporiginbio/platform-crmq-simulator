@@ -116,8 +116,8 @@ export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummary
               <Text size="sm" fw={600} ff="monospace">{cfg.scheduler.topN}</Text>
             </Box>
             <Box>
-              <Text size="xs" c="dimmed">Skip Threshold</Text>
-              <Text size="sm" fw={600} ff="monospace">{cfg.scheduler.skipThreshold}</Text>
+              <Text size="xs" c="dimmed">Reservation Threshold</Text>
+              <Text size="sm" fw={600} ff="monospace">{cfg.scheduler.reservationThresholdSec}s</Text>
             </Box>
             <Box>
               <Text size="xs" c="dimmed">Backfill Max Ratio</Text>
