@@ -9,14 +9,13 @@ import {
   MEMORY_GB_PER_VCPU,
   VCPU_PER_GPU,
   getQuotaLabel,
+  resolvePercentToResources,
 } from '@/lib/config/types';
 import {
   vcpuFromCpuMillis,
   gbFromMemoryMiB,
 } from '@/lib/units';
 import { getFormula, normalizeFormulaType } from '@/lib/config/formulas/registry';
-import { resolveLimitToAbsolute } from '@/lib/config/limits/registry';
-import type { LimitValue } from '@/lib/config/types';
 
 interface ConfigSummaryModalProps {
   opened: boolean;
@@ -26,16 +25,6 @@ interface ConfigSummaryModalProps {
 }
 
 const fmtResource = (val: number) => val.toLocaleString();
-const fmtTime = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`);
-
-/**
- * Build LimitValue from an org's raw limit Resources for a given pool.
- * In the simulator the org.limits are always absolute Resources.
- */
-const buildLimitValue = (resources: Resources): LimitValue => ({
-  mode: 'absolute' as const,
-  resources,
-});
 
 export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummaryModalProps) => {
   const formulaType = normalizeFormulaType(cfg.formulaType ?? 'balanced_composite');
@@ -52,18 +41,21 @@ export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummary
     return structuredClone(formulaDef.defaultParams) as Record<string, unknown>;
   }, [cfg, formulaType, formulaDef]);
 
-  // Resolve org limits to absolute values per pool
+  // Resolve percent-based org limits to absolute values per pool. Missing
+  // keys are treated as unlimited-within-pool (show the full pool total).
   const resolvedLimits = useMemo(() => {
     const result: Record<string, Record<string, Resources>> = {};
     for (const org of orgs) {
       result[org.id] = {};
       for (const pool of cfg.cluster.pools) {
-        const rawLimit = org.limits[pool.type];
-        if (!rawLimit) {
+        const pct = org.limits[pool.type];
+        if (typeof pct !== 'number') {
           result[org.id][pool.type] = { ...pool.total };
         } else {
-          const limitValue = buildLimitValue(rawLimit);
-          result[org.id][pool.type] = resolveLimitToAbsolute(limitValue, pool.total);
+          result[org.id][pool.type] = resolvePercentToResources(
+            pct,
+            pool.total,
+          );
         }
       }
     }
@@ -167,12 +159,12 @@ export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummary
                   <Table.Thead>
                     <Table.Tr>
                       <Table.Th style={thStyle}>Organization</Table.Th>
-                      <Table.Th style={thStyle}>Mode</Table.Th>
+                      <Table.Th style={{ ...thStyle, textAlign: 'right' }}>Quota %</Table.Th>
                       {isCpuPool && (
-                        <Table.Th style={{ ...thStyle, textAlign: 'right' }}>CPU (configured)</Table.Th>
+                        <Table.Th style={{ ...thStyle, textAlign: 'right' }}>CPU (resolved)</Table.Th>
                       )}
                       {!isCpuPool && (
-                        <Table.Th style={{ ...thStyle, textAlign: 'right' }}>GPU (configured)</Table.Th>
+                        <Table.Th style={{ ...thStyle, textAlign: 'right' }}>GPU (resolved)</Table.Th>
                       )}
                       {!isCpuPool && (
                         <Table.Th style={{ ...thStyle, textAlign: 'right' }}>CPU (derived)</Table.Th>
@@ -185,6 +177,9 @@ export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummary
                   </Table.Thead>
                   <Table.Tbody>
                     {orgs.map((org) => {
+                      const pct = org.limits[pool.type];
+                      const pctLabel =
+                        typeof pct === 'number' ? `${pct}%` : '—';
                       const resolved = resolvedLimits[org.id]?.[pool.type] ?? {
                         cpuMillis: 0,
                         memoryMiB: 0,
@@ -202,10 +197,15 @@ export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummary
                               <Badge size="xs" variant="light" color="violet">P{org.priority}</Badge>
                             </Group>
                           </Table.Td>
-                          <Table.Td>
-                            <Badge size="xs" variant="light" color="grey" radius="sm">
-                              absolute
-                            </Badge>
+                          <Table.Td
+                            style={{
+                              textAlign: 'right',
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {pctLabel}
                           </Table.Td>
                           <Table.Td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>
                             {fmtResource(primaryValue)}

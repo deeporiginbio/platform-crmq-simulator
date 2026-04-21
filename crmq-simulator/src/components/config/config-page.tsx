@@ -4,10 +4,9 @@
 
 import { useState, useMemo } from 'react';
 import { Box, Button, Group, Stack, Stepper, Text, Alert } from '@mantine/core';
-import type { CRMQConfig, Org, Resources } from '@/lib/types';
+import type { CRMQConfig, Org } from '@/lib/types';
 import { useConfigForm, buildInitialConfig } from '@/lib/config';
 import { useConfigValidation } from '@/lib/config/use-config-validation';
-import { cpuMillisFromVcpu, memoryMiBFromGb } from '@/lib/units';
 import { FormulaStep } from './formula-step';
 import { OrgQuotasStep } from './org-quotas-step';
 import { ReviewStep } from './review-step';
@@ -51,28 +50,16 @@ export const ConfigPage = ({ config, orgs, onApply, onCancel }: ConfigPageProps)
       formulaParams: form.state.formula.params as unknown as Record<string, unknown>,
     };
 
-    // Update org limits from the quota config
-    const newOrgs = orgs.map(org => {
-      const oq = form.state.orgQuotas.find(q => q.orgId === org.id);
+    // Update org limits from the quota config — percent-only, clamped [0, 100]
+    const newOrgs = orgs.map((org) => {
+      const oq = form.state.orgQuotas.find((q) => q.orgId === org.id);
       if (!oq) return org;
 
-      const limits: Record<string, Resources> = {};
+      const limits: Record<string, number> = {};
       for (const pool of form.state.cluster.pools) {
-        const lim = oq.limits[pool.type];
-        if (!lim || lim.mode === 'uncapped') {
-          limits[pool.type] = { ...pool.total };
-        } else if (lim.mode === 'absolute') {
-          limits[pool.type] = { ...lim.resources };
-        } else if (lim.mode === 'percentage') {
-          limits[pool.type] = {
-            cpuMillis: Math.round(
-              pool.total.cpuMillis * lim.pct.cpuMillis / 100
-            ),
-            memoryMiB: Math.round(
-              pool.total.memoryMiB * lim.pct.memoryMiB / 100
-            ),
-            gpu: Math.round(pool.total.gpu * lim.pct.gpu / 100),
-          };
+        const pct = oq.limits[pool.type];
+        if (typeof pct === 'number') {
+          limits[pool.type] = Math.max(0, Math.min(100, pct));
         }
       }
 
@@ -130,9 +117,6 @@ export const ConfigPage = ({ config, orgs, onApply, onCancel }: ConfigPageProps)
               orgQuotas={form.state.orgQuotas}
               pools={form.state.cluster.pools}
               orgs={orgs}
-              formulaType={form.state.formula.type}
-              onSetLimitMode={form.setLimitMode}
-              onSetLimitQuota={form.setLimitQuota}
               onSetLimitPctQuota={form.setLimitPctQuota}
             />
           </Stepper.Step>

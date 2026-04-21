@@ -103,7 +103,7 @@ export interface DrfFairShareParams {
  *
  * t     = wait / agingHorizon
  * aging  = agingFloor × t + (1 − agingFloor) × t ^ agingExponent
- * score  = wPriority × (org_priority / 10)
+ * score  = wPriority × (org_priority / 5)
  *        + wAging   × min(1, aging)
  *        + wLoad    × (1 − org_cpus_in_pool / pool_total_cpu)
  *        + wCpuHrs  × (1 − min(1, log(1+cpu_hours) / log(1+maxCpuHours)))
@@ -149,16 +149,17 @@ export type FormulaType = FormulaConfig['type'];
 
 // ── Limit System ────────────────────────────────────────────────────────────
 
-export type LimitMode = 'absolute' | 'percentage' | 'uncapped';
-
 /**
- * Discriminated union of limit values.
- * The `mode` field determines the shape.
+ * Per-pool quota as a **single percentage** of the pool's available capacity
+ * (pool.total − pool.reserved), in the range [0, 100]. Matches the platform
+ * schema: `organizations.resourceQuota numeric(6,2) default 100`.
+ *
+ * A missing pool key means the org has no quota in that pool (treated as
+ * unlimited within the pool's physical capacity). Percentage applies uniformly
+ * to all resource dimensions (cpuMillis, memoryMiB, gpu) — we do not tune
+ * per-dimension.
  */
-export type LimitValue =
-  | { mode: 'absolute'; resources: Resources }
-  | { mode: 'percentage'; pct: Resources }  // each dim is 0–100
-  | { mode: 'uncapped' };
+export type LimitValue = number;
 
 /** Per-org, per-pool limit configuration */
 export interface OrgQuotaConfig {
@@ -191,7 +192,6 @@ export interface SchedulingPolicyConfig {
  * - metadata (label, description, icon)
  * - Zod schema for validation
  * - default parameter values
- * - which limit types are compatible
  *
  * The React component is registered separately in the component layer
  * to keep this file framework-agnostic.
@@ -203,26 +203,25 @@ export interface FormulaDefinition<P = unknown> {
   icon: string;
   schema: z.ZodType<P>;
   defaultParams: P;
-  compatibleLimitTypes: LimitMode[];
 }
 
 /**
- * A limit definition registers:
- * - metadata
- * - Zod schema
- * - default value
- * - resolve function: converts to absolute Resources given pool totals
+ * Resolve a percentage quota to absolute Resources, given the pool's
+ * available capacity (pool.total − pool.reserved is the typical caller input;
+ * this helper does not subtract reserved — pass the desired denominator).
+ * Clamps pct to [0, 100] and floors to an integer per resource dimension.
  */
-export interface LimitDefinition<V = unknown> {
-  mode: LimitMode;
-  label: string;
-  description: string;
-  icon: string;
-  schema: z.ZodType<V>;
-  defaultValue: V;
-  /** Resolve this limit to absolute Resources, given the pool's total capacity */
-  resolve: (value: V, poolTotal: Resources) => Resources;
-}
+export const resolvePercentToResources = (
+  pct: number,
+  poolTotal: Resources,
+): Resources => {
+  const p = Math.max(0, Math.min(100, pct)) / 100;
+  return {
+    cpuMillis: Math.floor(poolTotal.cpuMillis * p),
+    memoryMiB: Math.floor(poolTotal.memoryMiB * p),
+    gpu: Math.floor(poolTotal.gpu * p),
+  };
+};
 
 
 // ── Validation ──────────────────────────────────────────────────────────────

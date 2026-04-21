@@ -5,7 +5,13 @@
 import { useState } from 'react';
 import { Box, Button, Group, SimpleGrid, Stack, Text } from '@mantine/core';
 import type { CRMQConfig, Org } from '@/lib/types';
-import { vcpuFromCpuMillis, gbFromMemoryMiB, cpuMillisFromVcpu, memoryMiBFromGb } from '@/lib/units';
+import {
+  vcpuFromCpuMillis,
+  gbFromMemoryMiB,
+  cpuMillisFromVcpu,
+  memoryMiBFromGb,
+} from '@/lib/units';
+import { resolvePercentToResources } from '@/lib/config/types';
 import classes from './config-modal.module.css';
 
 interface ConfigModalProps {
@@ -67,25 +73,12 @@ export const ConfigModal = ({ cfg, orgs, onSave, onClose }: ConfigModalProps) =>
   const setOrg = (idx: number, field: string, val: string | number) => {
     setLo((prev) => {
       const next: Org[] = JSON.parse(JSON.stringify(prev));
-      // field format: "limits.mason.cpu" or "priority" or "name"
+      // field format: "limits.mason" (percent), "priority", or "name"
       const parts = field.split('.');
-      if (parts[0] === 'limits' && parts.length === 3) {
+      if (parts[0] === 'limits' && parts.length === 2) {
         const poolType = parts[1];
-        const dim = parts[2] as 'cpu' | 'memory' | 'gpu';
-        if (!next[idx].limits[poolType]) {
-          next[idx].limits[poolType] = {
-            cpuMillis: 0,
-            memoryMiB: 0,
-            gpu: 0,
-          };
-        }
-        if (dim === 'cpu') {
-          next[idx].limits[poolType].cpuMillis = cpuMillisFromVcpu(Number(val));
-        } else if (dim === 'memory') {
-          next[idx].limits[poolType].memoryMiB = memoryMiBFromGb(Number(val));
-        } else {
-          next[idx].limits[poolType][dim] = Number(val);
-        }
+        const pct = Math.max(0, Math.min(100, Number(val)));
+        next[idx].limits[poolType] = pct;
       } else if (field === 'name') {
         next[idx].name = String(val);
       } else if (field === 'priority') {
@@ -228,43 +221,53 @@ export const ConfigModal = ({ cfg, orgs, onSave, onClose }: ConfigModalProps) =>
                           <span className={classes.orgId}>{org.id}</span>
                         </Text>
                         <Box style={{ width: 80 }}>
-                          <CF label="Priority" value={org.priority} onChange={(v) => setOrg(i, 'priority', v)} min={1} max={10} />
+                          <CF label="Priority" value={org.priority} onChange={(v) => setOrg(i, 'priority', v)} min={1} max={5} />
                         </Box>
                       </Group>
-                      {lc.cluster.pools.map((pool) => (
-                        <Box key={pool.type}>
-                          <Text size="xs" fw={600} style={{ color: pool.color }} mb={4}>
-                            {pool.label}
-                          </Text>
-                          <SimpleGrid cols={3} spacing="xs">
-                            <CF
-                              label="CPU Limit"
-                              value={vcpuFromCpuMillis(
-                                org.limits[pool.type]?.cpuMillis ?? 0
-                              )}
-                              onChange={(v) =>
-                                setOrg(i, `limits.${pool.type}.cpu`, v)
-                              }
-                            />
-                            <CF
-                              label="MEM Limit"
-                              value={gbFromMemoryMiB(
-                                org.limits[pool.type]?.memoryMiB ?? 0
-                              )}
-                              onChange={(v) =>
-                                setOrg(i, `limits.${pool.type}.memory`, v)
-                              }
-                            />
-                            <CF
-                              label="GPU Limit"
-                              value={org.limits[pool.type]?.gpu ?? 0}
-                              onChange={(v) =>
-                                setOrg(i, `limits.${pool.type}.gpu`, v)
-                              }
-                            />
-                          </SimpleGrid>
-                        </Box>
-                      ))}
+                      {lc.cluster.pools.map((pool) => {
+                        const pct = org.limits[pool.type];
+                        const currentPct = typeof pct === 'number' ? pct : 100;
+                        const resolved = resolvePercentToResources(
+                          currentPct,
+                          pool.total,
+                        );
+                        return (
+                          <Box key={pool.type}>
+                            <Text
+                              size="xs"
+                              fw={600}
+                              style={{ color: pool.color }}
+                              mb={4}
+                            >
+                              {pool.label}
+                            </Text>
+                            <SimpleGrid cols={2} spacing="xs">
+                              <CF
+                                label="Quota %"
+                                value={currentPct}
+                                min={0}
+                                max={100}
+                                onChange={(v) =>
+                                  setOrg(i, `limits.${pool.type}`, v)
+                                }
+                              />
+                              <Box>
+                                <Text size="xs" c="dimmed" mb={4}>
+                                  Resolves to
+                                </Text>
+                                <Text size="xs" ff="monospace">
+                                  {vcpuFromCpuMillis(resolved.cpuMillis)}{' '}
+                                  vCPU ·{' '}
+                                  {gbFromMemoryMiB(resolved.memoryMiB)} GB
+                                  {pool.quotaType === 'gpu'
+                                    ? ` · ${resolved.gpu} GPU`
+                                    : ''}
+                                </Text>
+                              </Box>
+                            </SimpleGrid>
+                          </Box>
+                        );
+                      })}
                     </Stack>
                   </Box>
                 ))}

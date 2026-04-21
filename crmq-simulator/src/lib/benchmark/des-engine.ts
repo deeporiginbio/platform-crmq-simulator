@@ -37,6 +37,7 @@ import {
   sub3,
   cloneZero,
   shallowCloneOrgUsage,
+  resolveOrgPoolCap,
 } from '../scheduler';
 import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
 import type { GeneratedJob } from './traffic';
@@ -663,12 +664,14 @@ const desBulkDispatch = (
     const org = orgs.find(
       (o) => o.id === job.orgId,
     );
-    const orgLimits =
-      org?.limits[poolType] ?? {
-        cpuMillis: 9999000,
-        memoryMiB: 9999000,
-        gpu: 9999,
-      };
+    const pool = config.cluster.pools.find(
+      (p) => p.type === poolType,
+    );
+    const orgLimits = resolveOrgPoolCap(
+      org,
+      poolType,
+      pool,
+    );
     const orgPools =
       orgUsage[job.orgId] ??
       zeroPoolUsage(config);
@@ -749,12 +752,14 @@ const desBulkDispatch = (
           const bfOrg = orgs.find(
             (o) => o.id === bf.orgId,
           );
-          const bfLimits =
-            bfOrg?.limits[bfPool] ?? {
-              cpuMillis: 9999000,
-              memoryMiB: 9999000,
-              gpu: 9999,
-            };
+          const bfPoolObj = config.cluster.pools.find(
+            (p) => p.type === bfPool,
+          );
+          const bfLimits = resolveOrgPoolCap(
+            bfOrg,
+            bfPool,
+            bfPoolObj,
+          );
           if (
             bfOrgUsed.cpuMillis + bf.resources.cpuMillis >
               bfLimits.cpuMillis ||

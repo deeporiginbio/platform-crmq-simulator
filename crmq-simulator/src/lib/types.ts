@@ -38,19 +38,28 @@ export const resourcesSchema = z.object({
 
 // ── Organization ─────────────────────────────────────────────────────────────
 
-/** Org quotas are keyed by pool type string (derived from config, not hardcoded) */
+/**
+ * Org quotas are keyed by pool type string (derived from config).
+ * Each value is a raw **percentage** of the pool's available capacity
+ * (pool.total − pool.reserved), in the range [0, 100]. This mirrors the
+ * platform's `resourceQuota` column in `organizations` (default 100%).
+ * A single percent applies uniformly to all resource dimensions in that
+ * pool — we do not tune per-dimension.
+ */
 export interface Org {
   id: string;
   name: string;
-  priority: number; // 1–10, higher = more important
-  limits: Record<string, Resources>; // per-pool quotas (§1.3 Multi-Tenancy)
+  priority: number; // 1–5, higher = more important (platform parity)
+  /** per-pool percentage quota in [0, 100]. Missing key ⇒ unlimited within pool. */
+  limits: Record<string, number>;
 }
 
 export const orgSchema = z.object({
   id: z.string(),
   name: z.string(),
-  priority: z.number(),
-  limits: z.record(z.string(), resourcesSchema),
+  // Platform parity: ORGANIZATION_PRIORITY CHECK (value BETWEEN 1 AND 5)
+  priority: z.number().int().min(1).max(5),
+  limits: z.record(z.string(), z.number().min(0).max(100)),
 });
 
 // ── Job Lifecycle ────────────────────────────────────────────────────────────
@@ -73,8 +82,9 @@ export const jobSchema = z.object({
   id: z.string(),
   name: z.string(),
   orgId: z.string(),
-  userPriority: z.number(),
-  toolPriority: z.number(),
+  // Platform parity: priorities are smallint [1, 5]
+  userPriority: z.number().int().min(1).max(5),
+  toolPriority: z.number().int().min(1).max(5),
   resources: resourcesSchema,
   estimatedDuration: z.number(),
   ttl: z.number(),

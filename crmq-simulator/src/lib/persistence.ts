@@ -155,16 +155,47 @@ export const hydrateConfig = (raw: SerializableConfig): CRMQConfig => ({
 // ── Generic localStorage CRUD ───────────────────────────────────────────────
 
 /**
- * Detect persisted state from the pre-unit-rename era (`cpu`/`memory` on
- * Resources). Post-rename payloads always emit `cpuMillis` / `memoryMiB`
- * somewhere, so the presence of either of those keys is the "new-era"
- * signal. Absence of both plus a raw `"cpu":<num>` or `"memory":<num>`
- * marker means the blob predates the migration and must be dropped to
- * avoid NaNs/undefined when the hydrator hits it.
+ * Detect persisted state from a prior schema era that is no longer
+ * compatible with the current hydrator. We drop these blobs rather than
+ * try to migrate them, because both eras touched the same surfaces (orgs,
+ * resources) and partial hydration would produce NaNs or undefined gates.
+ *
+ * Two eras are detected:
+ *  1. Pre-unit-rename: Resources used `cpu`/`memory`, not `cpuMillis`/
+ *     `memoryMiB`. Post-rename payloads always emit `cpuMillis` /
+ *     `memoryMiB` somewhere; absence of both plus a raw `"cpu":<num>`
+ *     or `"memory":<num>` marker signals the old shape.
+ *  2. Pre-percent-only-quota: `Org.limits` held discriminated-union
+ *     `LimitValue` objects (`{mode: "absolute" | "percentage" | "uncapped"}`)
+ *     or raw Resources objects. The current shape is
+ *     `Record<string, number>`. Presence of any `"mode":"absolute"`-style
+ *     marker signals the legacy union, and presence of `cpuMillis` inside
+ *     a `limits` Object (rather than a bare pool→number map) signals the
+ *     even older Resources-as-limit shape.
  */
 const isLegacyPersisted = (raw: string): boolean => {
-  if (raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"')) return false;
-  return /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw);
+  // Era 1: pre-unit-rename
+  const hasNewUnits =
+    raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"');
+  if (!hasNewUnits && /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw)) {
+    return true;
+  }
+
+  // Era 2a: legacy LimitValue discriminated union
+  if (/"mode"\s*:\s*"(?:absolute|percentage|uncapped)"/.test(raw)) {
+    return true;
+  }
+
+  // Era 2b: legacy Resources-shaped org limits. The current shape is
+  // `"limits":{"pool":<number>}`; the old shape nested a Resources object
+  // under each pool key inside an org record. Match `"limits":{...{...
+  // "cpuMillis":...}}` — if the cpuMillis/memoryMiB appears nested inside
+  // a `limits` object, it's the old shape.
+  if (/"limits"\s*:\s*\{[^{}]*\{[^{}]*"cpuMillis"/.test(raw)) {
+    return true;
+  }
+
+  return false;
 };
 
 const readList = <T>(key: string): T[] => {

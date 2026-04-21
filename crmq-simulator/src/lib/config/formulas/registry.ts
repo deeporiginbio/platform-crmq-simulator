@@ -69,7 +69,6 @@ const currentWeighted: FormulaDefinition<CurrentWeightedParams> = {
     toolWeight: 100,
     agingFactor: 5,
   },
-  compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],
 };
 
 const normalizedWeightedSum: FormulaDefinition<NormalizedWeightedSumParams> = {
@@ -86,7 +85,6 @@ const normalizedWeightedSum: FormulaDefinition<NormalizedWeightedSumParams> = {
     C: 10,
     tau: 60,
   },
-  compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],
 };
 
 const drfFairShare: FormulaDefinition<DrfFairShareParams> = {
@@ -99,7 +97,6 @@ const drfFairShare: FormulaDefinition<DrfFairShareParams> = {
     C: 10,
     tau: 60,
   },
-  compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],
 };
 
 const balancedComposite: FormulaDefinition<BalancedCompositeParams> = {
@@ -124,7 +121,6 @@ const balancedComposite: FormulaDefinition<BalancedCompositeParams> = {
     agingFloor: 0.10,
     maxCpuHours: 1000,
   },
-  compatibleLimitTypes: ['absolute', 'percentage', 'uncapped'],
 };
 
 const strictFifo: FormulaDefinition<StrictFifoParams> = {
@@ -134,7 +130,6 @@ const strictFifo: FormulaDefinition<StrictFifoParams> = {
   icon: '📐',
   schema: strictFifoSchema,
   defaultParams: {} as StrictFifoParams,
-  compatibleLimitTypes: ['absolute', 'uncapped'],
 };
 
 // ── Registry ────────────────────────────────────────────────────────────────

@@ -106,51 +106,31 @@ export const DEFAULT_CONFIG: CRMQConfig = {
   formulaType: 'balanced_composite',
 };
 
+/**
+ * Seed orgs. `limits[poolType]` is a **percentage** of the pool's total
+ * capacity in [0, 100] — platform parity. Missing pool key ⇒ no quota row
+ * for that pool (treated as unlimited up to pool capacity).
+ *
+ * Percentages chosen to mirror the prior absolute seeds against DEFAULT_CONFIG
+ * pool totals:
+ *   mason     total = 1364 vCPU / 5457 GB
+ *   mason-gpu total = 768 vCPU / 3072 GB / 192 GPU
+ * deeporigin = 100% of both pools (big customer, full nominal quota).
+ * org-beta / org-gamma = 28% mason (≈384/1364), 25% mason-gpu (192/768 = 48/192).
+ * Oversubscription (Σ > 100%) is intentional and matches real platform usage.
+ */
 export const DEFAULT_ORGS: Org[] = [
   {
     id: 'deeporigin', name: 'Deeporigin', priority: 3,
-    limits: {
-      mason: {
-        cpuMillis: cpuMillisFromVcpu(1364),
-        memoryMiB: memoryMiBFromGb(5456),
-        gpu: 0,
-      },
-      'mason-gpu': {
-        cpuMillis: cpuMillisFromVcpu(768),
-        memoryMiB: memoryMiBFromGb(3072),
-        gpu: 192,
-      },
-    },
+    limits: { mason: 100, 'mason-gpu': 100 },
   },
   {
     id: 'org-beta', name: 'Partner Org', priority: 2,
-    limits: {
-      mason: {
-        cpuMillis: cpuMillisFromVcpu(384),
-        memoryMiB: memoryMiBFromGb(1536),
-        gpu: 0,
-      },
-      'mason-gpu': {
-        cpuMillis: cpuMillisFromVcpu(192),
-        memoryMiB: memoryMiBFromGb(768),
-        gpu: 48,
-      },
-    },
+    limits: { mason: 28, 'mason-gpu': 25 },
   },
   {
     id: 'org-gamma', name: 'Research Lab', priority: 1,
-    limits: {
-      mason: {
-        cpuMillis: cpuMillisFromVcpu(384),
-        memoryMiB: memoryMiBFromGb(1536),
-        gpu: 0,
-      },
-      'mason-gpu': {
-        cpuMillis: cpuMillisFromVcpu(192),
-        memoryMiB: memoryMiBFromGb(768),
-        gpu: 48,
-      },
-    },
+    limits: { mason: 28, 'mason-gpu': 25 },
   },
 ];
 
@@ -193,6 +173,32 @@ export const UNLIMITED_RES: Readonly<Resources> = Object.freeze({
   memoryMiB: Number.MAX_SAFE_INTEGER,
   gpu: Number.MAX_SAFE_INTEGER,
 });
+
+/**
+ * Resolve an org's per-pool quota to absolute Resources.
+ *
+ * `org.limits[poolType]` is a single percentage in [0, 100] applied uniformly
+ * to all resource dimensions of `pool.total`. When the org has no row for
+ * this pool, or the pool is not found, returns UNLIMITED_RES (sentinel).
+ *
+ * Uses `pool.total` as the denominator (not `total − reserved`); `reserved`
+ * is system overhead and is subtracted separately by Gate 2 (pool capacity).
+ */
+export const resolveOrgPoolCap = (
+  org: Org | undefined,
+  poolType: string,
+  pool: ResourcePool | undefined,
+): Resources => {
+  if (!org || !pool) return { ...UNLIMITED_RES };
+  const pct = org.limits[poolType];
+  if (pct === undefined) return { ...UNLIMITED_RES };
+  const p = Math.max(0, Math.min(100, pct)) / 100;
+  return {
+    cpuMillis: Math.floor(pool.total.cpuMillis * p),
+    memoryMiB: Math.floor(pool.total.memoryMiB * p),
+    gpu: Math.floor(pool.total.gpu * p),
+  };
+};
 
 /** Build a frozen zero-usage record for the given config's pools */
 export const buildZeroPoolUsage = (
@@ -256,7 +262,7 @@ export const calcScore = (job: Job, now: number, config: CRMQConfig, orgs: Org[]
 
   // For current_weighted, use the inline production formula for backward compat
   if (formulaType === 'current_weighted') {
-    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
     const s = config.scoring;
     return (
@@ -439,11 +445,12 @@ export const runScheduler = (
 
     const org = orgs.find(o => o.id === job.orgId);
     const poolType = getJobPoolType(job, config);
-    const orgPoolLimits = org?.limits[poolType] ?? UNLIMITED_RES;
+    const pool = config.cluster.pools.find(p => p.type === poolType);
+    const orgPoolLimits = resolveOrgPoolCap(org, poolType, pool);
     const orgPools = no[job.orgId] ?? zeroPoolUsage(config);
     const orgUsedInPool = orgPools[poolType] ?? cloneZero();
 
-    // Gate 1: Org Quota (per-pool)
+    // Gate 1: Org Quota (per-pool, resolved from percentage × pool.total)
     const orgOk = (
       orgUsedInPool.cpuMillis + job.resources.cpuMillis <= orgPoolLimits.cpuMillis &&
       orgUsedInPool.memoryMiB + job.resources.memoryMiB <= orgPoolLimits.memoryMiB &&
@@ -504,7 +511,8 @@ export const runScheduler = (
           const bfOrgPools = no[bf.orgId] ?? zeroPoolUsage(config);
           const bfOrgUsedInPool = bfOrgPools[bf_poolType] ?? cloneZero();
           const bfOrg = orgs.find(o => o.id === bf.orgId);
-          const bfLimits = bfOrg?.limits[bf_poolType] ?? UNLIMITED_RES;
+          const bfPool = config.cluster.pools.find(p => p.type === bf_poolType);
+          const bfLimits = resolveOrgPoolCap(bfOrg, bf_poolType, bfPool);
           const bfOrgOk = (
             bfOrgUsedInPool.cpuMillis + bf.resources.cpuMillis <= bfLimits.cpuMillis &&
             bfOrgUsedInPool.memoryMiB + bf.resources.memoryMiB <= bfLimits.memoryMiB &&
