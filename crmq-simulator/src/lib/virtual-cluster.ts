@@ -20,36 +20,37 @@ import {
   type OrgUsageMap,
   type Prediction,
   type PredictionMap,
-  type PredictionStatus,
   type FormattedPrediction,
   type ReasonLabel,
   BlockingReason,
+  jobPools,
+  jobResInPool,
 } from './types';
 
 import {
   calcScore,
-  getAvailability,
   getAvailabilityPerPool,
-  fits,
-  sub3,
-  sumResources,
   runScheduler,
   completeJobs,
   evictExpired,
   shallowCloneOrgUsage,
   fmtTime,
-  ZERO,
   resolveOrgPoolCap,
 } from './scheduler';
-import { getJobPoolType } from './types';
 
 
 // ── Deep Clone Helpers ───────────────────────────────────────────────────────
 
 const deepCloneJob = <T extends Job>(j: T): T => {
+  // ResourcesByType is a map of pool → Resources; clone both levels so the
+  // predictive path can't mutate the original job's per-pool slices.
+  const resources: typeof j.resources = {};
+  for (const k of Object.keys(j.resources)) {
+    resources[k] = { ...j.resources[k] };
+  }
   return {
     ...j,
-    resources: { ...j.resources },
+    resources,
   };
 };
 
@@ -71,34 +72,44 @@ export const determineBlockingReason = (
   queueRank: number,
 ): BlockingReason => {
   const org = orgs.find(o => o.id === job.orgId);
-  const poolType = getJobPoolType(job, config);
-  const pool = config.cluster.pools.find(p => p.type === poolType);
-  const orgPoolLimits: Resources = resolveOrgPoolCap(org, poolType, pool);
   const orgPools = orgUsage[job.orgId];
-  const orgUsedInPool: Resources = orgPools?.[poolType]
-    ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+  const pools = jobPools(job);
 
-  // Org quota (per-pool)
-  const orgOk = (
-    orgUsedInPool.cpuMillis + job.resources.cpuMillis <= orgPoolLimits.cpuMillis &&
-    orgUsedInPool.memoryMiB + job.resources.memoryMiB <= orgPoolLimits.memoryMiB &&
-    orgUsedInPool.gpu       + job.resources.gpu       <= orgPoolLimits.gpu
-  );
-  if (!orgOk) return BlockingReason.BLOCKED_BY_ORG_QUOTA;
+  // Org quota (per-pool) — fail the job if ANY requested pool's quota is
+  // exceeded. Multi-pool jobs need every slice to fit within that pool's quota.
+  for (const poolType of pools) {
+    const pool = config.cluster.pools.find(p => p.type === poolType);
+    const orgPoolLimits: Resources = resolveOrgPoolCap(org, poolType, pool);
+    const used: Resources = orgPools?.[poolType]
+      ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+    const req = jobResInPool(job, poolType);
+    const orgOk = (
+      used.cpuMillis + req.cpuMillis <= orgPoolLimits.cpuMillis &&
+      used.memoryMiB + req.memoryMiB <= orgPoolLimits.memoryMiB &&
+      used.gpu       + req.gpu       <= orgPoolLimits.gpu
+    );
+    if (!orgOk) return BlockingReason.BLOCKED_BY_ORG_QUOTA;
+  }
 
   // Reservation mode
   if (reservMode && reservTarget && job.id !== reservTarget) {
     return BlockingReason.BLOCKED_BY_RESERVATION_MODE;
   }
 
-  // Capacity — check pool (poolType already computed above)
-  const avail: Resources = availByPool[poolType]
-    ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
-
-  // Capacity — identify bottleneck dimension
-  const cpuShort = job.resources.cpuMillis > avail.cpuMillis;
-  const memShort = job.resources.memoryMiB > avail.memoryMiB;
-  const gpuShort = job.resources.gpu       > avail.gpu;
+  // Capacity — identify bottleneck dimension(s) aggregated across the pools
+  // the job touches. A multi-pool job is "short" on a dimension if any one
+  // of its requested pools can't satisfy that dimension's slice.
+  let cpuShort = false;
+  let memShort = false;
+  let gpuShort = false;
+  for (const poolType of pools) {
+    const avail: Resources = availByPool[poolType]
+      ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+    const req = jobResInPool(job, poolType);
+    if (req.cpuMillis > avail.cpuMillis) cpuShort = true;
+    if (req.memoryMiB > avail.memoryMiB) memShort = true;
+    if (req.gpu       > avail.gpu)       gpuShort = true;
+  }
   const shortCount =
     (cpuShort ? 1 : 0) + (memShort ? 1 : 0) + (gpuShort ? 1 : 0);
 

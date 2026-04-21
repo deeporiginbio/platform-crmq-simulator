@@ -49,14 +49,28 @@ export const persistSimState = (state: SimSnapshot | null) => {
 };
 
 /**
- * Detect pre-unit-rename simulation snapshots (`cpu`/`memory` on Resources).
- * Post-rename snapshots always emit `cpuMillis` / `memoryMiB` somewhere
- * (jobs' resources, orgUsage, etc.). Legacy snapshots have `"cpu":<num>`
- * or `"memory":<num>` and no `cpuMillis` / `memoryMiB` markers.
+ * Detect legacy simulation snapshots that no longer match the current shape.
+ *
+ * Eras detected:
+ *  1. Pre-unit-rename: `cpu` / `memory` keys instead of `cpuMillis` /
+ *     `memoryMiB`. Absence of both `cpuMillis` and `memoryMiB` markers
+ *     combined with a raw `"cpu":<num>` or `"memory":<num>` signals the
+ *     old shape.
+ *  2. Pre-multi-pool (platform parity §1.4): `Job.resources` was flat
+ *     `Resources` (e.g. `{cpuMillis, memoryMiB, gpu}`). Current shape is
+ *     `ResourcesByType` (e.g. `{mason:{...}}`). A `"resources":{"cpuMillis"`
+ *     marker means the immediate children are unit fields, not pool keys —
+ *     signaling the flat legacy shape.
  */
 const isLegacySimSnapshot = (raw: string): boolean => {
-  if (raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"')) return false;
-  return /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw);
+  // Era 1: pre-unit-rename
+  const hasNewUnits = raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"');
+  if (!hasNewUnits && /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw)) return true;
+
+  // Era 2: pre-multi-pool (flat Resources under "resources")
+  if (/"resources"\s*:\s*\{\s*"(?:cpuMillis|memoryMiB|gpu)"/.test(raw)) return true;
+
+  return false;
 };
 
 /**

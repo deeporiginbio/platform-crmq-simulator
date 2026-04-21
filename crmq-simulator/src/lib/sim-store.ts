@@ -39,6 +39,7 @@ import {
 import { useConfigStore } from './store';
 import { loadSimState, persistSimState } from './sim-persistence';
 import type { CRMQConfig, Org } from './types';
+import { jobPools, jobResInPool, getPoolMeta, routeSingleResource } from './types';
 import { gbFromMemoryMiB, vcpuFromCpuMillis } from './units';
 import { generateWorkload, SCENARIO_PRESETS } from './benchmark/traffic';
 import {
@@ -450,20 +451,25 @@ export const useSimStore = create<SimStore>()(
         ttlDefault: cfg.ttlDefault,
       });
 
-      // Convert GeneratedJob[] to Job[] with proper IDs and adjusted arrival times
-      // Arrival times are relative to current simTime
-      const jobs: Job[] = generated.map((gj) => ({
-        id: newJobId(),
-        name: gj.name,
-        orgId: gj.orgId,
-        userPriority: gj.userPriority,
-        toolPriority: gj.toolPriority,
-        resources: gj.resources,
-        estimatedDuration: gj.estimatedDuration,
-        ttl: gj.ttl,
-        enqueuedAt: st.simTime + gj.arrivalTime,
-        skipCount: 0,
-      }));
+      // Convert GeneratedJob[] to Job[] with proper IDs and adjusted arrival times.
+      // Traffic generator emits single-pool Resources; route to the correct pool
+      // via config-defined routeWhen predicates, then wrap as ResourcesByType.
+      // Arrival times are relative to current simTime.
+      const jobs: Job[] = generated.map((gj) => {
+        const routedPool = routeSingleResource(gj.resources, cfg);
+        return {
+          id: newJobId(),
+          name: gj.name,
+          orgId: gj.orgId,
+          userPriority: gj.userPriority,
+          toolPriority: gj.toolPriority,
+          resources: { [routedPool]: { ...gj.resources } },
+          estimatedDuration: gj.estimatedDuration,
+          ttl: gj.ttl,
+          enqueuedAt: st.simTime + gj.arrivalTime,
+          skipCount: 0,
+        };
+      });
 
       const log = mkLog(
         st.simTime,
@@ -479,6 +485,7 @@ export const useSimStore = create<SimStore>()(
 
     enqueue: (job) => {
       const st = get();
+      const cfg = useConfigStore.getState().cfg;
       const j: Job = {
         ...job,
         id: newJobId(),
@@ -486,11 +493,22 @@ export const useSimStore = create<SimStore>()(
         skipCount: 0,
       };
       // Log in UI units (vCPU + GB) — model uses cpuMillis + memoryMiB.
-      const vcpu = vcpuFromCpuMillis(j.resources.cpuMillis);
-      const gb = gbFromMemoryMiB(j.resources.memoryMiB);
+      const pools = jobPools(j);
+      const perPool = pools
+        .map((pt) => {
+          const slice = jobResInPool(j, pt);
+          const meta = getPoolMeta(cfg, pt);
+          const parts: string[] = [];
+          if (slice.cpuMillis > 0) parts.push(`CPU:${vcpuFromCpuMillis(slice.cpuMillis)}`);
+          if (slice.memoryMiB > 0) parts.push(`MEM:${gbFromMemoryMiB(slice.memoryMiB)}GB`);
+          if (slice.gpu > 0) parts.push(`GPU:${slice.gpu}`);
+          const body = parts.join(' ');
+          return pools.length > 1 ? `${meta.shortLabel}:{${body}}` : body;
+        })
+        .join(' ');
       const log = mkLog(
         st.simTime,
-        `ENQUEUE | ${j.name} [${j.id}] — org=${j.orgId}, CPU:${vcpu} MEM:${gb}GB GPU:${j.resources.gpu}, est=${fmtTime(j.estimatedDuration)}`,
+        `ENQUEUE | ${j.name} [${j.id}] — org=${j.orgId}, ${perPool}, est=${fmtTime(j.estimatedDuration)}`,
         'info',
       );
       set({

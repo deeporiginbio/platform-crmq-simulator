@@ -10,7 +10,7 @@
  * and reconstruct it in the worker from `quotaType`.
  */
 
-import type { CRMQConfig, Resources } from '../types';
+import type { AccountResource, CRMQConfig, Resources } from '../types';
 
 // ── Serializable Pool (no functions) ────────────────────────────────
 
@@ -24,6 +24,8 @@ export interface SerializablePool {
   reserved: Resources;
   /** Optional on the wire for backward-compat; defaulted to zero on hydrate. */
   externalUsage?: Resources;
+  /** Optional account-resource coupling key (§3.4). */
+  accountResourceId?: string;
 }
 
 export interface SerializableConfig {
@@ -33,6 +35,8 @@ export interface SerializableConfig {
   ttlDefault: number;
   formulaType?: CRMQConfig['formulaType'];
   formulaParams?: CRMQConfig['formulaParams'];
+  /** Optional shared account-level resources (§3.4). */
+  accountResources?: AccountResource[];
 }
 
 // ── Strip (main thread → worker) ────────────────────────────────────
@@ -52,6 +56,7 @@ export const stripConfig = (
     : -1,
   formulaType: cfg.formulaType,
   formulaParams: cfg.formulaParams,
+  accountResources: cfg.accountResources,
 });
 
 // ── Hydrate (inside the worker) ─────────────────────────────────────
@@ -66,11 +71,10 @@ export const hydrateConfig = (
       ...sp,
       // Backward-compat: pools serialized before #5 didn't carry externalUsage.
       externalUsage: sp.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 },
+      // Post-#4 signature: routeWhen takes a single Resources slice.
       routeWhen: sp.quotaType === 'gpu'
-        ? (job: { resources: Resources }) =>
-            job.resources.gpu > 0
-        : (job: { resources: Resources }) =>
-            job.resources.gpu === 0,
+        ? (res: Resources) => res.gpu > 0
+        : (res: Resources) => res.gpu === 0,
     })),
   },
   ttlDefault:
@@ -79,4 +83,5 @@ export const hydrateConfig = (
       : raw.ttlDefault,
   formulaType: raw.formulaType,
   formulaParams: raw.formulaParams,
+  accountResources: raw.accountResources,
 });

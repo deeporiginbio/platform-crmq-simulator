@@ -26,7 +26,7 @@ import type {
   OrgUsageMap,
   Resources,
 } from '../types';
-import { getJobPoolType } from '../types';
+import { getJobPoolType, jobPools, jobResInPool, jobTotalResources, routeSingleResource } from '../types';
 import {
   calcScore,
   zeroPoolUsage,
@@ -39,7 +39,6 @@ import {
   shallowCloneOrgUsage,
   resolveOrgPoolCap,
 } from '../scheduler';
-import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
 import type { GeneratedJob } from './traffic';
 import type { JobEvent, UtilizationSample } from './metrics';
 
@@ -284,20 +283,20 @@ const sampleUtilization = (ctx: DESContext) => {
     { used: Resources; total: Resources }
   > = {};
   for (const pool of config.cluster.pools) {
-    const poolJobs = state.active.filter(
-      (j) =>
-        getJobPoolType(j, config) === pool.type,
-    );
-    const used = poolJobs.reduce<Resources>(
-      (acc, j) => ({
-        cpuMillis: acc.cpuMillis + j.resources.cpuMillis,
-        memoryMiB: acc.memoryMiB + j.resources.memoryMiB,
-        gpu: acc.gpu + j.resources.gpu,
-      }),
-      { cpuMillis: 0, memoryMiB: 0, gpu: 0 },
-    );
+    // Multi-pool aware: a job contributes its per-pool slice to each pool
+    // it touches. Single-pool jobs collapse to the original behaviour.
+    let usedCpu = 0;
+    let usedMem = 0;
+    let usedGpu = 0;
+    for (const j of state.active) {
+      const slice = j.resources[pool.type];
+      if (!slice) continue;
+      usedCpu += slice.cpuMillis;
+      usedMem += slice.memoryMiB;
+      usedGpu += slice.gpu;
+    }
     pools[pool.type] = {
-      used,
+      used: { cpuMillis: usedCpu, memoryMiB: usedMem, gpu: usedGpu },
       total: {
         cpuMillis: pool.total.cpuMillis - pool.reserved.cpuMillis,
         memoryMiB:
@@ -343,13 +342,16 @@ const applyEvent = (
   switch (event.type) {
     case 'JOB_ARRIVAL': {
       const tmpl = event.jobTemplate!;
+      // Traffic generator emits single-pool Resources; route to the correct
+      // pool via config-defined routeWhen predicates, then wrap as ResourcesByType.
+      const routedPool = routeSingleResource(tmpl.resources, config);
       const job: Job = {
         id: newJobId(),
         name: tmpl.name,
         orgId: tmpl.orgId,
         userPriority: tmpl.userPriority,
         toolPriority: tmpl.toolPriority,
-        resources: { ...tmpl.resources },
+        resources: { [routedPool]: { ...tmpl.resources } },
         estimatedDuration:
           tmpl.estimatedDuration,
         ttl: tmpl.ttl,
@@ -362,7 +364,7 @@ const applyEvent = (
         jobId: job.id,
         jobName: job.name,
         orgId: job.orgId,
-        resources: { ...job.resources },
+        resources: jobTotalResources(job),
         poolType: getJobPoolType(job, config),
         enqueuedAt: state.simTime,
         startedAt: null,
@@ -399,28 +401,24 @@ const applyEvent = (
         state.active[ri] = last;
         state.active.pop();
       }
-      const poolType = getJobPoolType(
-        job,
-        config,
-      );
-      // Update org usage
-      const orgPools =
-        state.orgUsage[job.orgId];
-      if (orgPools?.[poolType]) {
-        const p = orgPools[poolType];
-        orgPools[poolType] = {
-          cpuMillis: p.cpuMillis - job.resources.cpuMillis,
-          memoryMiB:
-            p.memoryMiB - job.resources.memoryMiB,
-          gpu: p.gpu - job.resources.gpu,
-        };
-      }
-      // Update incremental free pool
-      const fp = state.freeByPool[poolType];
-      if (fp) {
-        fp.cpuMillis += job.resources.cpuMillis;
-        fp.memoryMiB += job.resources.memoryMiB;
-        fp.gpu += job.resources.gpu;
+      // Release per-pool slices (multi-pool aware, §1.4).
+      const orgPools = state.orgUsage[job.orgId];
+      for (const poolType of jobPools(job)) {
+        const slice = jobResInPool(job, poolType);
+        if (orgPools?.[poolType]) {
+          const p = orgPools[poolType];
+          orgPools[poolType] = {
+            cpuMillis: p.cpuMillis - slice.cpuMillis,
+            memoryMiB: p.memoryMiB - slice.memoryMiB,
+            gpu: p.gpu - slice.gpu,
+          };
+        }
+        const fp = state.freeByPool[poolType];
+        if (fp) {
+          fp.cpuMillis += slice.cpuMillis;
+          fp.memoryMiB += slice.memoryMiB;
+          fp.gpu += slice.gpu;
+        }
       }
       const ev = jobEvents.get(jobId);
       if (ev) ev.completedAt = state.simTime;
@@ -634,9 +632,9 @@ const desBulkDispatch = (
     }
   }
 
-  // Working copies for mutation during pass
-  const availByPool: Record<string, Resources> =
-    {};
+  // Working copies for mutation during pass. Reassigned by `admit` each
+  // time a job is dispatched to produce a fresh per-pool availability map.
+  let availByPool: Record<string, Resources> = {};
   for (const pt in state.freeByPool) {
     availByPool[pt] = {
       ...state.freeByPool[pt],
@@ -649,44 +647,57 @@ const desBulkDispatch = (
   const dispatched = new Set<string>();
   let blockedTopJob: ScoreEntry | null = null;
 
+  // Multi-pool gates (§1.4 platform parity).
+  const quotaPasses = (j: Job, usage: OrgUsageMap): boolean => {
+    const org = orgs.find((o) => o.id === j.orgId);
+    const orgPools = usage[j.orgId] ?? zeroPoolUsage(config);
+    for (const pt of jobPools(j)) {
+      const pool = config.cluster.pools.find((p) => p.type === pt);
+      const limits = resolveOrgPoolCap(org, pt, pool);
+      const used = orgPools[pt] ?? cloneZero();
+      const req = jobResInPool(j, pt);
+      if (
+        used.cpuMillis + req.cpuMillis > limits.cpuMillis ||
+        used.memoryMiB + req.memoryMiB > limits.memoryMiB ||
+        used.gpu + req.gpu > limits.gpu
+      ) return false;
+    }
+    return true;
+  };
+
+  const capacityPasses = (
+    j: Job,
+    avail: Record<string, Resources>,
+  ): boolean => {
+    for (const pt of jobPools(j)) {
+      const a = avail[pt];
+      if (!a) return false;
+      if (!fits(jobResInPool(j, pt), a)) return false;
+    }
+    return true;
+  };
+
+  const admit = (
+    j: Job,
+    avail: Record<string, Resources>,
+    usage: OrgUsageMap,
+  ): { avail: Record<string, Resources>; usage: OrgUsageMap } => {
+    const newAvail = { ...avail };
+    const orgPools = { ...(usage[j.orgId] ?? zeroPoolUsage(config)) };
+    for (const pt of jobPools(j)) {
+      const slice = jobResInPool(j, pt);
+      newAvail[pt] = sub3(newAvail[pt], slice);
+      orgPools[pt] = add3(orgPools[pt] ?? cloneZero(), slice);
+    }
+    return { avail: newAvail, usage: { ...usage, [j.orgId]: orgPools } };
+  };
+
   for (const entry of topEntries) {
     const job = queue[entry.idx];
     if (dispatched.has(job.id)) continue;
 
-    const poolType = getJobPoolType(
-      job,
-      config,
-    );
-    const avail = availByPool[poolType];
-    if (!avail) continue;
-
-    // Gate: Org quota
-    const org = orgs.find(
-      (o) => o.id === job.orgId,
-    );
-    const pool = config.cluster.pools.find(
-      (p) => p.type === poolType,
-    );
-    const orgLimits = resolveOrgPoolCap(
-      org,
-      poolType,
-      pool,
-    );
-    const orgPools =
-      orgUsage[job.orgId] ??
-      zeroPoolUsage(config);
-    const orgUsedInPool =
-      orgPools[poolType] ?? cloneZero();
-
-    const orgOk =
-      orgUsedInPool.cpuMillis + job.resources.cpuMillis <=
-        orgLimits.cpuMillis &&
-      orgUsedInPool.memoryMiB +
-        job.resources.memoryMiB <=
-        orgLimits.memoryMiB &&
-      orgUsedInPool.gpu + job.resources.gpu <=
-        orgLimits.gpu;
-    if (!orgOk) continue;
+    // Gate: Org quota (per-pool, across all pools the job requests)
+    if (!quotaPasses(job, orgUsage)) continue;
 
     // Gate: Reservation mode
     if (
@@ -697,8 +708,8 @@ const desBulkDispatch = (
       continue;
     }
 
-    // Gate: Pool capacity
-    if (!fits(job.resources, avail)) {
+    // Gate: Pool capacity (every requested pool must fit simultaneously)
+    if (!capacityPasses(job, availByPool)) {
       job.skipCount = (job.skipCount || 0) + 1;
       // §3.4 platform parity: wall-clock reservation trigger.
       // `firstGatedAt` captures when this job was first capacity-gated;
@@ -735,64 +746,18 @@ const desBulkDispatch = (
             scores[bi].score >= entry.score
           )
             continue;
-          const bfPool = getJobPoolType(
-            bf,
-            config,
-          );
-          const bfAvail = availByPool[bfPool];
-          if (
-            !bfAvail ||
-            !fits(bf.resources, bfAvail)
-          )
-            continue;
+          if (!capacityPasses(bf, availByPool)) continue;
           if (
             bf.estimatedDuration >
             job.estimatedDuration *
               sch.backfillMaxRatio
           )
             continue;
-          const bfOrgPools =
-            orgUsage[bf.orgId] ??
-            zeroPoolUsage(config);
-          const bfOrgUsed =
-            bfOrgPools[bfPool] ?? cloneZero();
-          const bfOrg = orgs.find(
-            (o) => o.id === bf.orgId,
-          );
-          const bfPoolObj = config.cluster.pools.find(
-            (p) => p.type === bfPool,
-          );
-          const bfLimits = resolveOrgPoolCap(
-            bfOrg,
-            bfPool,
-            bfPoolObj,
-          );
-          if (
-            bfOrgUsed.cpuMillis + bf.resources.cpuMillis >
-              bfLimits.cpuMillis ||
-            bfOrgUsed.memoryMiB +
-              bf.resources.memoryMiB >
-              bfLimits.memoryMiB ||
-            bfOrgUsed.gpu + bf.resources.gpu >
-              bfLimits.gpu
-          )
-            continue;
+          if (!quotaPasses(bf, orgUsage)) continue;
           dispatched.add(bf.id);
-          availByPool[bfPool] = sub3(
-            availByPool[bfPool],
-            bf.resources,
-          );
-          const bfDispPools = {
-            ...bfOrgPools,
-          };
-          bfDispPools[bfPool] = add3(
-            bfDispPools[bfPool],
-            bf.resources,
-          );
-          orgUsage = {
-            ...orgUsage,
-            [bf.orgId]: bfDispPools,
-          };
+          const res = admit(bf, availByPool, orgUsage);
+          availByPool = res.avail;
+          orgUsage = res.usage;
           break;
         }
       }
@@ -801,22 +766,9 @@ const desBulkDispatch = (
 
     // ✅ DISPATCH
     dispatched.add(job.id);
-    availByPool[poolType] = sub3(
-      availByPool[poolType],
-      job.resources,
-    );
-    const dispOrgPools = {
-      ...(orgUsage[job.orgId] ??
-        zeroPoolUsage(config)),
-    };
-    dispOrgPools[poolType] = add3(
-      dispOrgPools[poolType],
-      job.resources,
-    );
-    orgUsage = {
-      ...orgUsage,
-      [job.orgId]: dispOrgPools,
-    };
+    const res = admit(job, availByPool, orgUsage);
+    availByPool = res.avail;
+    orgUsage = res.usage;
     if (
       reservMode &&
       reservTarget === job.id
@@ -856,12 +808,14 @@ const desBulkDispatch = (
       state.active.push(running);
       state.activeIds.add(j.id);
       state.activeMap.set(j.id, running);
-      const pt = getJobPoolType(j, config);
-      const fp = state.freeByPool[pt];
-      if (fp) {
-        fp.cpuMillis -= j.resources.cpuMillis;
-        fp.memoryMiB -= j.resources.memoryMiB;
-        fp.gpu -= j.resources.gpu;
+      // Multi-pool aware: decrement each pool slice the job reserves.
+      for (const pt of jobPools(j)) {
+        const slice = jobResInPool(j, pt);
+        const fp = state.freeByPool[pt];
+        if (!fp) continue;
+        fp.cpuMillis -= slice.cpuMillis;
+        fp.memoryMiB -= slice.memoryMiB;
+        fp.gpu -= slice.gpu;
       }
       eq.push({
         time:
@@ -1010,26 +964,24 @@ const drainRemaining = (ctx: DESContext) => {
         state.active[ri] = last;
         state.active.pop();
       }
-      const poolType = getJobPoolType(
-        job,
-        ctx.config,
-      );
-      const orgPools =
-        state.orgUsage[job.orgId];
-      if (orgPools?.[poolType]) {
-        const p = orgPools[poolType];
-        orgPools[poolType] = {
-          cpuMillis: p.cpuMillis - job.resources.cpuMillis,
-          memoryMiB:
-            p.memoryMiB - job.resources.memoryMiB,
-          gpu: p.gpu - job.resources.gpu,
-        };
-      }
-      const fp = state.freeByPool[poolType];
-      if (fp) {
-        fp.cpuMillis += job.resources.cpuMillis;
-        fp.memoryMiB += job.resources.memoryMiB;
-        fp.gpu += job.resources.gpu;
+      // Release per-pool slices (multi-pool aware).
+      const orgPools = state.orgUsage[job.orgId];
+      for (const pt of jobPools(job)) {
+        const slice = jobResInPool(job, pt);
+        if (orgPools?.[pt]) {
+          const p = orgPools[pt];
+          orgPools[pt] = {
+            cpuMillis: p.cpuMillis - slice.cpuMillis,
+            memoryMiB: p.memoryMiB - slice.memoryMiB,
+            gpu: p.gpu - slice.gpu,
+          };
+        }
+        const fp = state.freeByPool[pt];
+        if (fp) {
+          fp.cpuMillis += slice.cpuMillis;
+          fp.memoryMiB += slice.memoryMiB;
+          fp.gpu += slice.gpu;
+        }
       }
       const ev = jobEvents.get(jobId);
       if (ev) ev.completedAt = state.simTime;

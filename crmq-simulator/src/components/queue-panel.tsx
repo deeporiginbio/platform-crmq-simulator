@@ -7,7 +7,7 @@ import { Box, Button, Group, Menu, Stack, Text } from '@mantine/core';
 import type { Job, Org, CRMQConfig, PredictionMap, Prediction } from '@/lib/types';
 import { calcScore, fmtTime } from '@/lib/scheduler';
 import { formatPrediction, getReasonLabel } from '@/lib/virtual-cluster';
-import { getJobPoolType, getPoolMeta } from '@/lib/types';
+import { getPoolMeta, jobPools, jobResInPool, jobTotalResources } from '@/lib/types';
 import { normalizeFormulaType } from '@/lib/config/formulas/registry';
 import { SCENARIO_PRESETS } from '@/lib/benchmark/traffic';
 import { useVirtualScroll } from '@/hooks/use-virtual-scroll';
@@ -112,7 +112,7 @@ const computeBreakdown = (
         AGING_FLOOR * t
         + (1 - AGING_FLOOR)
           * Math.pow(t, AGING_EXPONENT);
-      const cpuHours = vcpuFromCpuMillis(job.resources.cpuMillis) * (job.estimatedDuration / 3600);
+      const cpuHours = vcpuFromCpuMillis(jobTotalResources(job).cpuMillis) * (job.estimatedDuration / 3600);
       const cpuHrsNorm = Math.min(
         1,
         Math.log(1 + cpuHours)
@@ -149,10 +149,7 @@ const QueueItem = memo(({ job, rank, isTarget, cfg, orgs, prediction }: QueueIte
   const fmt = prediction ? formatPrediction(prediction) : null;
   const reason = prediction ? getReasonLabel(prediction.blockingReason) : null;
 
-  const poolType = getJobPoolType(job, cfg);
-  const poolMeta = getPoolMeta(cfg, poolType);
-  const poolLabel = poolMeta.shortLabel;
-  const poolColor = poolMeta.color;
+  const pools = jobPools(job);
 
   return (
     <Box className={`${classes.queueItem} ${isTarget ? classes.queueItemTarget : ''}`}>
@@ -162,9 +159,21 @@ const QueueItem = memo(({ job, rank, isTarget, cfg, orgs, prediction }: QueueIte
             <Text className={classes.rank}>#{rank}</Text>
             <Text className={classes.jobName}>{job.name}</Text>
             <Text className={classes.jobId}>[{job.id}]</Text>
-            <Text size="xs" fw={500} px={6} py={2} style={{ background: poolColor + '20', color: poolColor, borderRadius: 4 }}>
-              {poolLabel}
-            </Text>
+            {pools.map((pt) => {
+              const meta = getPoolMeta(cfg, pt);
+              return (
+                <Text
+                  key={pt}
+                  size="xs"
+                  fw={500}
+                  px={6}
+                  py={2}
+                  style={{ background: meta.color + '20', color: meta.color, borderRadius: 4 }}
+                >
+                  {meta.shortLabel}
+                </Text>
+              );
+            })}
             {isTarget && <Text c="violet.6">🔒</Text>}
             {(job.skipCount || 0) > 0 && (
               <Text
@@ -205,13 +214,19 @@ const QueueItem = memo(({ job, rank, isTarget, cfg, orgs, prediction }: QueueIte
         </Group>
 
         <Group gap={8} wrap="wrap">
-          <Text className={classes.resourceTag}>
-            CPU:{vcpuFromCpuMillis(job.resources.cpuMillis)}
-          </Text>
-          <Text className={classes.resourceTag}>
-            MEM:{gbFromMemoryMiB(job.resources.memoryMiB)}GB
-          </Text>
-          <Text className={classes.resourceTag}>GPU:{job.resources.gpu}</Text>
+          {pools.map((pt) => {
+            const slice = jobResInPool(job, pt);
+            const meta = getPoolMeta(cfg, pt);
+            const parts: string[] = [];
+            if (slice.cpuMillis > 0) parts.push(`CPU:${vcpuFromCpuMillis(slice.cpuMillis)}`);
+            if (slice.memoryMiB > 0) parts.push(`MEM:${gbFromMemoryMiB(slice.memoryMiB)}GB`);
+            if (slice.gpu > 0) parts.push(`GPU:${slice.gpu}`);
+            return (
+              <Text key={pt} className={classes.resourceTag} title={`${meta.label}: ${parts.join(' ')}`}>
+                {pools.length > 1 ? `${meta.shortLabel} ` : ''}{parts.join(' ')}
+              </Text>
+            );
+          })}
           <Text className={classes.resourceTag}>
             Est:{fmtTime(job.estimatedDuration)}
           </Text>

@@ -14,7 +14,7 @@
  * - localStorage keys are prefixed with `crmq:` to avoid collisions.
  */
 
-import type { CRMQConfig, Org, Resources } from './types';
+import type { AccountResource, CRMQConfig, Org, Resources } from './types';
 import type {
   BenchmarkRun,
   BenchmarkReport,
@@ -51,6 +51,8 @@ interface SerializablePool {
   reserved: Resources;
   /** Optional on the wire for backward-compat; defaulted to zero on hydrate. */
   externalUsage?: Resources;
+  /** Optional account-resource coupling key (§3.4). */
+  accountResourceId?: string;
 }
 
 /** Serializable version of CRMQConfig (pools stripped of routeWhen) */
@@ -61,6 +63,8 @@ interface SerializableConfig {
   ttlDefault: number;
   formulaType?: CRMQConfig['formulaType'];
   formulaParams?: CRMQConfig['formulaParams'];
+  /** Optional shared account-level resources (§3.4). */
+  accountResources?: AccountResource[];
 }
 
 // ── Saved Item Wrappers ─────────────────────────────────────────────────────
@@ -129,6 +133,13 @@ const stripConfig = (cfg: CRMQConfig): SerializableConfig => ({
   ttlDefault: isFinite(cfg.ttlDefault) ? cfg.ttlDefault : -1,  // -1 sentinel → Infinity
   formulaType: cfg.formulaType,
   formulaParams: cfg.formulaParams ? { ...cfg.formulaParams } : undefined,
+  accountResources: cfg.accountResources
+    ? cfg.accountResources.map(ar => ({
+        ...ar,
+        totalCapacity: { ...ar.totalCapacity },
+        externalUsage: { ...ar.externalUsage },
+      }))
+    : undefined,
 });
 
 /**
@@ -147,10 +158,13 @@ export const hydrateConfig = (raw: SerializableConfig): CRMQConfig => ({
   },
   cluster: {
     pools: raw.cluster.pools.map((sp) => {
-      // Try to find the matching default pool for its routeWhen
+      // Try to find the matching default pool for its routeWhen.
+      // Post-#4 platform parity: routeWhen is a single-slice predicate
+      // `(res: Resources) => boolean`. The fallback below mirrors the
+      // built-in mason/mason-gpu split.
       const defaultPool = DEFAULT_CONFIG.cluster.pools.find(p => p.type === sp.type);
-      const routeWhen = defaultPool?.routeWhen ?? ((job: { resources: Resources }) =>
-        sp.quotaType === 'gpu' ? job.resources.gpu > 0 : job.resources.gpu === 0
+      const routeWhen = defaultPool?.routeWhen ?? ((res: Resources) =>
+        sp.quotaType === 'gpu' ? res.gpu > 0 : res.gpu === 0
       );
       // Backward-compat: pools persisted before #5 didn't carry externalUsage.
       const externalUsage = sp.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
@@ -160,6 +174,15 @@ export const hydrateConfig = (raw: SerializableConfig): CRMQConfig => ({
   ttlDefault: (raw.ttlDefault == null || raw.ttlDefault <= 0) ? Infinity : raw.ttlDefault,
   formulaType: raw.formulaType,
   formulaParams: raw.formulaParams,
+  accountResources: raw.accountResources
+    ? raw.accountResources.map(ar => ({
+        ...ar,
+        totalCapacity: { ...ar.totalCapacity },
+        externalUsage: ar.externalUsage
+          ? { ...ar.externalUsage }
+          : { cpuMillis: 0, memoryMiB: 0, gpu: 0 },
+      }))
+    : undefined,
 });
 
 // ── Generic localStorage CRUD ───────────────────────────────────────────────
