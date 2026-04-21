@@ -4,10 +4,22 @@
 
 import { memo, useState } from 'react';
 import { Box, Group, Stack, Text, UnstyledButton } from '@mantine/core';
-import type { Org, OrgUsageMap, ResourcePool, Resources, CRMQConfig } from '@/lib/types';
+import type { Org, OrgUsageMap, ResourcePool, CRMQConfig } from '@/lib/types';
 import { zeroPoolUsage } from '@/lib/scheduler';
+import { resolvePercentToResources } from '@/lib/config/types';
 import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 import classes from './org-panel.module.css';
+
+/**
+ * Resolve an org's per-pool percentage quota to absolute Resources. A
+ * missing key is treated as unlimited-within-pool, so we show the full
+ * pool total (matches scheduler gate semantics).
+ */
+const resolveOrgPoolAbs = (org: Org, pool: ResourcePool) => {
+  const pct = org.limits[pool.type];
+  if (typeof pct !== 'number') return { ...pool.total };
+  return resolvePercentToResources(pct, pool.total);
+};
 
 interface OrgPanelProps {
   orgs: Org[];
@@ -51,13 +63,12 @@ export const OrgPanel = memo(({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => 
           const totalUsedCpu = pools.reduce(
             (s, p) =>
               s + vcpuFromCpuMillis(usage[p.type]?.cpuMillis ?? 0),
-            0
+            0,
           );
-          const totalLimitCpu = pools.reduce(
-            (s, p) =>
-              s + vcpuFromCpuMillis(org.limits[p.type]?.cpuMillis ?? 0),
-            0
-          );
+          const totalLimitCpu = pools.reduce((s, p) => {
+            const abs = resolveOrgPoolAbs(org, p);
+            return s + vcpuFromCpuMillis(abs.cpuMillis);
+          }, 0);
           const totalPct = totalLimitCpu > 0 ? Math.round((totalUsedCpu / totalLimitCpu) * 100) : 0;
 
           return (
@@ -87,11 +98,7 @@ export const OrgPanel = memo(({ orgs, orgUsage, pools, cfg }: OrgPanelProps) => 
                       memoryMiB: 0,
                       gpu: 0,
                     };
-                    const poolLimits = org.limits[pool.type] ?? {
-                      cpuMillis: 0,
-                      memoryMiB: 0,
-                      gpu: 0,
-                    };
+                    const poolLimits = resolveOrgPoolAbs(org, pool);
 
                     return (
                       <Box key={pool.type} className={classes.poolBlock}>

@@ -9,6 +9,6 @@ export {
   VCPU_PER_GPU,
 } from './types';
 export { FORMULA_REGISTRY, FORMULA_LIST, getFormula, normalizeFormulaType } from './formulas/registry';
-export { LIMIT_REGISTRY, LIMIT_LIST, getLimit, resolveLimitToAbsolute } from './limits/registry';
+export { resolveLimitToAbsolute } from './limits/registry';
 export { useConfigForm, buildInitialConfig } from './use-config-form';
 export { useConfigValidation, resolveAllLimits } from './use-config-validation';

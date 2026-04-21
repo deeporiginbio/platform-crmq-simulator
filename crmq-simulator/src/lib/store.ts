@@ -56,16 +56,40 @@ const stripForStorage = (cfg: CRMQConfig) => ({
 const MIGRATION_KEY = 'crmq:migrated-v1';
 
 /**
- * Detect pre-unit-rename active-config blobs (pool totals / org limits used
- * `cpu` / `memory` rather than `cpuMillis` / `memoryMiB`). The post-rename
- * payload always emits at least one `cpuMillis` / `memoryMiB` key on pool
- * resources, so presence of either is the "new-era" marker. A legacy blob
- * has `"cpu":<num>` or `"memory":<num>` with neither new key — hydrating
- * it would produce NaNs downstream.
+ * Detect active-config blobs from a prior schema era that is no longer
+ * compatible with the current hydrator. Drop these rather than migrate.
+ *
+ * Eras detected:
+ *  1. Pre-unit-rename: Resources used `cpu`/`memory` instead of
+ *     `cpuMillis`/`memoryMiB`. Post-rename payloads always emit
+ *     `cpuMillis`/`memoryMiB` somewhere; absence of both plus a raw
+ *     `"cpu":<num>` or `"memory":<num>` marker signals the old shape.
+ *  2. Pre-percent-only-quota: `Org.limits` held discriminated-union
+ *     `LimitValue` objects (`mode: "absolute"|"percentage"|"uncapped"`)
+ *     or raw Resources objects. Current shape is `Record<string, number>`.
+ *     The presence of a `"mode":"absolute"`-style marker signals the
+ *     union, and a nested `cpuMillis` under `"limits":{...}` signals the
+ *     older Resources-as-limit shape.
  */
 const isLegacyActiveConfig = (raw: string): boolean => {
-  if (raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"')) return false;
-  return /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw);
+  // Era 1: pre-unit-rename
+  const hasNewUnits =
+    raw.includes('"cpuMillis"') || raw.includes('"memoryMiB"');
+  if (!hasNewUnits && /"(?:cpu|memory)"\s*:\s*-?\d/.test(raw)) {
+    return true;
+  }
+
+  // Era 2a: legacy LimitValue discriminated union
+  if (/"mode"\s*:\s*"(?:absolute|percentage|uncapped)"/.test(raw)) {
+    return true;
+  }
+
+  // Era 2b: Resources-shaped org limits nested under `"limits":{...}`
+  if (/"limits"\s*:\s*\{[^{}]*\{[^{}]*"cpuMillis"/.test(raw)) {
+    return true;
+  }
+
+  return false;
 };
 
 /** Load the last-active config from localStorage, with one-time migration */

@@ -6,9 +6,11 @@
  * useReducer-based state for the scheduling policy configuration form.
  *
  * Key design decisions:
- * - Discriminated unions ensure no stale data from hidden/deselected formulas
- * - When switching formula type, old params are replaced with new defaults
- * - When switching limit mode, old limit data is replaced with new defaults
+ * - Discriminated unions on formula type ensure no stale params when
+ *   switching formulas
+ * - Limits are percentage-only (platform parity with
+ *   `organizations.resourceQuota numeric(6,2) default 100`), so the reducer
+ *   only exposes a single percent-per-pool action
  * - Deeply nested state is updated via targeted actions, not generic setPath
  */
 
@@ -17,39 +19,53 @@ import type { Resources, CRMQConfig, Org } from '../types';
 import type {
   FormulaConfig,
   FormulaType,
-  LimitMode,
-  LimitValue,
   OrgQuotaConfig,
   SchedulingPolicyConfig,
 } from './types';
-import { deriveResources } from './types';
-import type { QuotaType } from '../types';
-import { getFormula, normalizeFormulaType, FORMULA_REGISTRY } from './formulas/registry';
-import { LIMIT_REGISTRY } from './limits/registry';
+import { getFormula, normalizeFormulaType } from './formulas/registry';
 
 // ── Actions ─────────────────────────────────────────────────────────────────
 
 type ConfigAction =
   // Formula
   | { type: 'SET_FORMULA_TYPE'; formulaType: FormulaType }
-  | { type: 'SET_FORMULA_PARAM'; key: string; value: number | boolean | string }
+  | {
+      type: 'SET_FORMULA_PARAM';
+      key: string;
+      value: number | boolean | string;
+    }
   // Scheduler
-  | { type: 'SET_SCHEDULER_PARAM'; key: 'topN' | 'skipThreshold' | 'backfillMaxRatio'; value: number }
+  | {
+      type: 'SET_SCHEDULER_PARAM';
+      key: 'topN' | 'skipThreshold' | 'backfillMaxRatio';
+      value: number;
+    }
   | { type: 'SET_TTL_DEFAULT'; value: number }
   // Cluster pools
-  | { type: 'SET_POOL_RESOURCE'; poolIdx: number; field: 'total' | 'reserved'; dim: keyof Resources; value: number }
-  // Org quotas
-  | { type: 'SET_LIMIT_MODE'; orgId: string; poolType: string; mode: LimitMode }
-  | { type: 'SET_LIMIT_VALUE'; orgId: string; poolType: string; key: string; dim: keyof Resources; value: number }
-  | { type: 'SET_LIMIT_QUOTA'; orgId: string; poolType: string; quotaType: QuotaType; value: number }
-  | { type: 'SET_LIMIT_PCT_QUOTA'; orgId: string; poolType: string; pctValue: number }
+  | {
+      type: 'SET_POOL_RESOURCE';
+      poolIdx: number;
+      field: 'total' | 'reserved';
+      dim: keyof Resources;
+      value: number;
+    }
+  // Org quotas — percent-only
+  | {
+      type: 'SET_LIMIT_PCT_QUOTA';
+      orgId: string;
+      poolType: string;
+      pctValue: number;
+    }
   | { type: 'SET_ORG_PRIORITY'; orgId: string; value: number }
   // Bulk
   | { type: 'RESET'; config: SchedulingPolicyConfig };
 
 // ── Reducer ─────────────────────────────────────────────────────────────────
 
-const reducer = (state: SchedulingPolicyConfig, action: ConfigAction): SchedulingPolicyConfig => {
+const reducer = (
+  state: SchedulingPolicyConfig,
+  action: ConfigAction,
+): SchedulingPolicyConfig => {
   switch (action.type) {
     case 'SET_FORMULA_TYPE': {
       const def = getFormula(action.formulaType);
@@ -68,7 +84,10 @@ const reducer = (state: SchedulingPolicyConfig, action: ConfigAction): Schedulin
         ...state,
         formula: {
           type: state.formula.type,
-          params: { ...(state.formula.params as unknown as Record<string, unknown>), [action.key]: action.value },
+          params: {
+            ...(state.formula.params as unknown as Record<string, unknown>),
+            [action.key]: action.value,
+          },
         } as unknown as FormulaConfig,
       };
     }
@@ -90,113 +109,26 @@ const reducer = (state: SchedulingPolicyConfig, action: ConfigAction): Schedulin
     case 'SET_POOL_RESOURCE': {
       const pools = [...state.cluster.pools];
       const pool = { ...pools[action.poolIdx] };
-      pool[action.field] = { ...pool[action.field], [action.dim]: action.value };
+      pool[action.field] = {
+        ...pool[action.field],
+        [action.dim]: action.value,
+      };
       pools[action.poolIdx] = pool;
       return { ...state, cluster: { ...state.cluster, pools } };
     }
 
-    case 'SET_LIMIT_MODE': {
-      const limitDef = LIMIT_REGISTRY[action.mode];
-      const newLimit: LimitValue = action.mode === 'uncapped'
-        ? { mode: 'uncapped' }
-        : action.mode === 'percentage'
-          ? { mode: 'percentage', pct: { ...(limitDef.defaultValue as { pct: Resources }).pct } }
-          : { mode: 'absolute', resources: { ...(limitDef.defaultValue as { resources: Resources }).resources } };
-
-      return {
-        ...state,
-        orgQuotas: state.orgQuotas.map(oq =>
-          oq.orgId === action.orgId
-            ? { ...oq, limits: { ...oq.limits, [action.poolType]: newLimit } }
-            : oq,
-        ),
-      };
-    }
-
-    case 'SET_LIMIT_VALUE': {
-      return {
-        ...state,
-        orgQuotas: state.orgQuotas.map(oq => {
-          if (oq.orgId !== action.orgId) return oq;
-          const limit = oq.limits[action.poolType];
-          if (!limit) return oq;
-
-          if (limit.mode === 'absolute' && action.key === 'resources') {
-            return {
-              ...oq,
-              limits: {
-                ...oq.limits,
-                [action.poolType]: {
-                  ...limit,
-                  resources: { ...limit.resources, [action.dim]: action.value },
-                },
-              },
-            };
-          }
-
-          if (limit.mode === 'percentage' && action.key === 'pct') {
-            return {
-              ...oq,
-              limits: {
-                ...oq.limits,
-                [action.poolType]: {
-                  ...limit,
-                  pct: { ...limit.pct, [action.dim]: action.value },
-                },
-              },
-            };
-          }
-
-          return oq;
-        }),
-      };
-    }
-
-    case 'SET_LIMIT_QUOTA': {
-      // User sets the single configurable dimension; the rest are derived
-      return {
-        ...state,
-        orgQuotas: state.orgQuotas.map(oq => {
-          if (oq.orgId !== action.orgId) return oq;
-          const limit = oq.limits[action.poolType];
-          if (!limit || limit.mode !== 'absolute') return oq;
-          return {
-            ...oq,
-            limits: {
-              ...oq.limits,
-              [action.poolType]: {
-                mode: 'absolute' as const,
-                resources: deriveResources(action.quotaType, action.value),
-              },
-            },
-          };
-        }),
-      };
-    }
-
     case 'SET_LIMIT_PCT_QUOTA': {
-      // User sets one % value; all dimensions use the same percentage
+      // Single percentage per (org, pool), clamped to [0, 100]
+      const pct = Math.max(0, Math.min(100, action.pctValue));
       return {
         ...state,
-        orgQuotas: state.orgQuotas.map(oq => {
+        orgQuotas: state.orgQuotas.map((oq) => {
           if (oq.orgId !== action.orgId) return oq;
-          const limit = oq.limits[action.poolType];
-          if (!limit || limit.mode !== 'percentage') return oq;
           return {
             ...oq,
             limits: {
               ...oq.limits,
-              [action.poolType]: {
-                mode: 'percentage' as const,
-                // Percentage values are unit-agnostic [0,100]; stored under
-                // the canonical cpuMillis/memoryMiB slot names for shape
-                // consistency with the absolute-limit Resources schema.
-                pct: {
-                  cpuMillis: action.pctValue,
-                  memoryMiB: action.pctValue,
-                  gpu: action.pctValue,
-                },
-              },
+              [action.poolType]: pct,
             },
           };
         }),
@@ -222,18 +154,35 @@ const reducer = (state: SchedulingPolicyConfig, action: ConfigAction): Schedulin
 
 /**
  * Build the initial SchedulingPolicyConfig from existing CRMQConfig + Org[].
- * Converts the current flat limits to the discriminated union format.
+ * Limits are read straight through as percentages; missing keys default to
+ * 100 (unlimited within the pool), matching the platform default.
  */
-export const buildInitialConfig = (cfg: CRMQConfig, orgs: Org[]): SchedulingPolicyConfig => {
-  const formulaType = normalizeFormulaType(cfg.formulaType ?? 'balanced_composite');
+export const buildInitialConfig = (
+  cfg: CRMQConfig,
+  orgs: Org[],
+): SchedulingPolicyConfig => {
+  const formulaType = normalizeFormulaType(
+    cfg.formulaType ?? 'balanced_composite',
+  );
   const formulaDef = getFormula(formulaType);
 
-  // If a saved formulaParams exists use it, otherwise fall back to scoring (for current_weighted) or defaults
+  // If a saved formulaParams exists use it, otherwise fall back to scoring
+  // (for current_weighted) or defaults
   const formulaParams = cfg.formulaParams
     ? cfg.formulaParams
     : formulaType === 'current_weighted'
       ? { ...cfg.scoring }
       : structuredClone(formulaDef.defaultParams);
+
+  const orgQuotas: OrgQuotaConfig[] = orgs.map((org) => ({
+    orgId: org.id,
+    limits: Object.fromEntries(
+      cfg.cluster.pools.map((pool) => [
+        pool.type,
+        org.limits[pool.type] ?? 100,
+      ]),
+    ),
+  }));
 
   return {
     formula: {
@@ -242,20 +191,9 @@ export const buildInitialConfig = (cfg: CRMQConfig, orgs: Org[]): SchedulingPoli
     } as unknown as FormulaConfig,
     scheduler: { ...cfg.scheduler },
     cluster: {
-      pools: cfg.cluster.pools.map(p => ({ ...p })),
+      pools: cfg.cluster.pools.map((p) => ({ ...p })),
     },
-    orgQuotas: orgs.map(org => ({
-      orgId: org.id,
-      limits: Object.fromEntries(
-        cfg.cluster.pools.map(pool => [
-          pool.type,
-          {
-            mode: 'absolute' as const,
-            resources: { ...(org.limits[pool.type] ?? { cpu: 0, memory: 0, gpu: 0 }) },
-          },
-        ]),
-      ),
-    })),
+    orgQuotas,
     ttlDefault: cfg.ttlDefault,
   };
 };
@@ -267,37 +205,56 @@ export const useConfigForm = (initialConfig: SchedulingPolicyConfig) => {
     dispatch({ type: 'SET_FORMULA_TYPE', formulaType });
   }, []);
 
-  const setFormulaParam = useCallback((key: string, value: number | boolean | string) => {
-    dispatch({ type: 'SET_FORMULA_PARAM', key, value });
-  }, []);
+  const setFormulaParam = useCallback(
+    (key: string, value: number | boolean | string) => {
+      dispatch({ type: 'SET_FORMULA_PARAM', key, value });
+    },
+    [],
+  );
 
-  const setSchedulerParam = useCallback((key: 'topN' | 'skipThreshold' | 'backfillMaxRatio', value: number) => {
-    dispatch({ type: 'SET_SCHEDULER_PARAM', key, value });
-  }, []);
+  const setSchedulerParam = useCallback(
+    (
+      key: 'topN' | 'skipThreshold' | 'backfillMaxRatio',
+      value: number,
+    ) => {
+      dispatch({ type: 'SET_SCHEDULER_PARAM', key, value });
+    },
+    [],
+  );
 
   const setTtlDefault = useCallback((value: number) => {
     dispatch({ type: 'SET_TTL_DEFAULT', value });
   }, []);
 
-  const setPoolResource = useCallback((poolIdx: number, field: 'total' | 'reserved', dim: keyof Resources, value: number) => {
-    dispatch({ type: 'SET_POOL_RESOURCE', poolIdx, field, dim, value });
-  }, []);
+  const setPoolResource = useCallback(
+    (
+      poolIdx: number,
+      field: 'total' | 'reserved',
+      dim: keyof Resources,
+      value: number,
+    ) => {
+      dispatch({
+        type: 'SET_POOL_RESOURCE',
+        poolIdx,
+        field,
+        dim,
+        value,
+      });
+    },
+    [],
+  );
 
-  const setLimitMode = useCallback((orgId: string, poolType: string, mode: LimitMode) => {
-    dispatch({ type: 'SET_LIMIT_MODE', orgId, poolType, mode });
-  }, []);
-
-  const setLimitValue = useCallback((orgId: string, poolType: string, key: string, dim: keyof Resources, value: number) => {
-    dispatch({ type: 'SET_LIMIT_VALUE', orgId, poolType, key, dim, value });
-  }, []);
-
-  const setLimitQuota = useCallback((orgId: string, poolType: string, quotaType: QuotaType, value: number) => {
-    dispatch({ type: 'SET_LIMIT_QUOTA', orgId, poolType, quotaType, value });
-  }, []);
-
-  const setLimitPctQuota = useCallback((orgId: string, poolType: string, pctValue: number) => {
-    dispatch({ type: 'SET_LIMIT_PCT_QUOTA', orgId, poolType, pctValue });
-  }, []);
+  const setLimitPctQuota = useCallback(
+    (orgId: string, poolType: string, pctValue: number) => {
+      dispatch({
+        type: 'SET_LIMIT_PCT_QUOTA',
+        orgId,
+        poolType,
+        pctValue,
+      });
+    },
+    [],
+  );
 
   const reset = useCallback((config: SchedulingPolicyConfig) => {
     dispatch({ type: 'RESET', config });
@@ -311,9 +268,6 @@ export const useConfigForm = (initialConfig: SchedulingPolicyConfig) => {
     setSchedulerParam,
     setTtlDefault,
     setPoolResource,
-    setLimitMode,
-    setLimitValue,
-    setLimitQuota,
     setLimitPctQuota,
     reset,
   };

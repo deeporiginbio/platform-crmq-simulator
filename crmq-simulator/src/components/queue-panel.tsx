@@ -66,7 +66,7 @@ const computeBreakdown = (
     case 'normalized_weighted_sum': {
       const wTier = 0.30, wAge = 0.30, wUser = 0.25, wTool = 0.15;
       const C = 10, tau = 60;
-      const tierFactor = priority / 10;
+      const tierFactor = priority / 5;
       const userFactor = (job.userPriority - 1) / 4;
       const toolFactor = (job.toolPriority - 1) / 4;
       const rawAge = C * Math.log2(1 + job.wait / tau);
@@ -104,7 +104,7 @@ const computeBreakdown = (
       const AGING_EXPONENT = 2;
       const AGING_FLOOR = 0.10;
       const MAX_CPU_HOURS = 1000;   // vCPU·hours — matches platform default
-      const maxPriority = 10;
+      const maxPriority = 5;
 
       const orgPriorityNorm = priority / maxPriority;
       const t = Math.min(1, job.wait / AGING_HORIZON);

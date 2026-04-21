@@ -116,8 +116,8 @@ export const ReviewStep = ({ config, orgs, errors, warnings }: ReviewStepProps) 
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th>Organization</Table.Th>
-                  <Table.Th>Mode</Table.Th>
-                  <Table.Th style={{ textAlign: 'right' }}>{primaryLabel} (configured)</Table.Th>
+                  <Table.Th style={{ textAlign: 'right' }}>Quota %</Table.Th>
+                  <Table.Th style={{ textAlign: 'right' }}>{primaryLabel} (resolved)</Table.Th>
                   {!isCpuPool && <Table.Th style={{ textAlign: 'right' }}>CPU (derived)</Table.Th>}
                   <Table.Th style={{ textAlign: 'right' }}>Memory GB (derived)</Table.Th>
                   {!isCpuPool && <Table.Th style={{ textAlign: 'right' }}>GPU</Table.Th>}
@@ -126,13 +126,13 @@ export const ReviewStep = ({ config, orgs, errors, warnings }: ReviewStepProps) 
               <Table.Tbody>
                 {config.orgQuotas.map((oq) => {
                   const org = orgs.find(o => o.id === oq.orgId);
-                  const limit = oq.limits[pool.type];
+                  const pct = oq.limits[pool.type];
+                  const pctLabel = typeof pct === 'number' ? `${pct}%` : '—';
                   const resolved = resolvedLimits[oq.orgId]?.[pool.type] ?? {
                     cpuMillis: 0,
                     memoryMiB: 0,
                     gpu: 0,
                   };
-                  const modeBadgeColor = limit?.mode === 'uncapped' ? 'green' : limit?.mode === 'percentage' ? 'blue' : 'grey';
                   const primaryValue = isCpuPool
                     ? vcpuFromCpuMillis(resolved.cpuMillis)
                     : resolved.gpu;
@@ -145,10 +145,15 @@ export const ReviewStep = ({ config, orgs, errors, warnings }: ReviewStepProps) 
                           <Badge size="xs" variant="light" color="violet">P{org?.priority ?? 0}</Badge>
                         </Group>
                       </Table.Td>
-                      <Table.Td>
-                        <Badge size="xs" variant="light" color={modeBadgeColor} radius="sm">
-                          {limit?.mode ?? '?'}
-                        </Badge>
+                      <Table.Td
+                        style={{
+                          textAlign: 'right',
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {pctLabel}
                       </Table.Td>
                       <Table.Td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>
                         {fmtResource(primaryValue)}

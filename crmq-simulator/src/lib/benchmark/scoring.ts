@@ -66,7 +66,7 @@ const currentWeightedScore: ScoringFormula = {
   description: 'Linear additive formula with fixed weights. Uses linear aging. The current production formula.',
   reference: '§1 (current implementation)',
   score: (job, now, config, orgs) => {
-    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
     const s = config.scoring;
     return (
@@ -86,7 +86,7 @@ const currentWeightedScore: ScoringFormula = {
  *         w_user × norm(userP) + w_tool × norm(toolP)
  *
  * All weights sum to 1.0.
- * tier_factor: maps org.priority [1–10] to [0, 1]
+ * tier_factor: maps org.priority [1–5] to [0, 1]
  * log_age: min(max_boost, C × log₂(1 + wait/tau))
  * norm: maps [1–5] to [0, 1]
  */
@@ -96,7 +96,7 @@ const normalizedWeightedSum: ScoringFormula = {
   description: 'Research-recommended formula: normalized inputs summing to 1.0 with logarithmic aging for bounded starvation prevention.',
   reference: '§4.2, §6.1',
   score: (job, now, _config, orgs) => {
-    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
 
     // Parameters (configurable via defaultParams)
@@ -107,7 +107,7 @@ const normalizedWeightedSum: ScoringFormula = {
     const C = 10;          // aging coefficient
     const tau = 60;        // aging time constant (seconds)
     const maxBoost = 1.0;  // cap on aging contribution (normalized)
-    const maxPriority = 10;
+    const maxPriority = 5;
 
     // Normalize inputs to [0, 1]
     const tierFactor = org.priority / maxPriority;
@@ -141,7 +141,7 @@ const drfFairShare: ScoringFormula = {
   description: 'Dominant Resource Fairness for inter-org scheduling, with normalized composite score and logarithmic aging within each org.',
   reference: '§3.1, §4.2, §6.1',
   score: (job, now, config, orgs, orgUsage) => {
-    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+    const org = orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
 
     // Compute dominant share for this org
@@ -170,7 +170,7 @@ const drfFairShare: ScoringFormula = {
 
     // Weight by org priority: higher-priority orgs get a natural bonus
     // But DRF ensures even low-priority orgs get proportional resources
-    const priorityWeight = org.priority / 10;
+    const priorityWeight = org.priority / 5;
 
     // Logarithmic aging
     const C = 10;
@@ -195,7 +195,7 @@ const drfFairShare: ScoringFormula = {
  *
  * pool = gpu_requested > 0 ? "mason-gpu" : "mason"
  *
- * org_priority_norm = org_priority / 10
+ * org_priority_norm = org_priority / 5
  * t                 = wait / AGING_HORIZON
  * aging             = min(1, AGING_FLOOR × t + (1 − AGING_FLOOR) × t²)
  * org_load          = org_cpus_in_pool / pool_total_cpu
@@ -227,7 +227,7 @@ const balancedComposite: ScoringFormula = {
   reference: 'Custom (Deep Origin team-designed)',
   score: (job, now, config, orgs, orgUsage) => {
     const org =
-      orgs.find(o => o.id === job.orgId) ?? { priority: 1 };
+      orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
 
     // Configurable weights
@@ -241,7 +241,7 @@ const balancedComposite: ScoringFormula = {
     const AGING_EXPONENT = 2;      // quadratic: slow start, steep end
     const AGING_FLOOR = 0.10;      // 10% linear floor — never fully zero
     const MAX_CPU_HOURS = 1000;    // vCPU·hours — matches platform default
-    const maxPriority = 10;
+    const maxPriority = 5;
 
     // 1. Normalized org priority [0, 1]
     const orgPriorityNorm = org.priority / maxPriority;

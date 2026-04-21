@@ -361,11 +361,6 @@ export const FormulaStep = ({
                       </Box>
                     </Group>
                     <Text size="xs" c="dimmed" mt={2}>{def.description}</Text>
-                    {isSelected && (
-                      <Text size="xs" c="indigo.6" mt={4}>
-                        Compatible limits: {def.compatibleLimitTypes.join(', ')}
-                      </Text>
-                    )}
                   </Box>
                 </Group>
               </UnstyledButton>

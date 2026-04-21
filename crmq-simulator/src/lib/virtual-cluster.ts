@@ -39,6 +39,7 @@ import {
   shallowCloneOrgUsage,
   fmtTime,
   ZERO,
+  resolveOrgPoolCap,
 } from './scheduler';
 import { getJobPoolType } from './types';
 
@@ -71,11 +72,8 @@ export const determineBlockingReason = (
 ): BlockingReason => {
   const org = orgs.find(o => o.id === job.orgId);
   const poolType = getJobPoolType(job, config);
-  const orgPoolLimits: Resources = org?.limits[poolType] ?? {
-    cpuMillis: Number.MAX_SAFE_INTEGER,
-    memoryMiB: Number.MAX_SAFE_INTEGER,
-    gpu: Number.MAX_SAFE_INTEGER,
-  };
+  const pool = config.cluster.pools.find(p => p.type === poolType);
+  const orgPoolLimits: Resources = resolveOrgPoolCap(org, poolType, pool);
   const orgPools = orgUsage[job.orgId];
   const orgUsedInPool: Resources = orgPools?.[poolType]
     ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
