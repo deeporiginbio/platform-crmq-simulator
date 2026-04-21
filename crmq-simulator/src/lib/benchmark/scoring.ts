@@ -21,7 +21,7 @@
  */
 
 import type { Job, CRMQConfig, Org, OrgUsageMap, Resources } from '../types';
-import { getJobPoolType } from '../types';
+import { jobPools, jobResInPool, jobTotalResources } from '../types';
 import { vcpuFromCpuMillis } from '../units';
 
 // ── Scoring Function Interface ────────────────────────────────────────────
@@ -144,18 +144,21 @@ const drfFairShare: ScoringFormula = {
     const org = orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
 
-    // Compute dominant share for this org
+    // Compute dominant share for this org, averaged across the pools the job
+    // touches, cpuMillis-weighted (§1.4 platform parity). Single-pool jobs
+    // reduce to the original behaviour; multi-pool jobs get a combined share
+    // that reflects their per-pool CPU footprint.
     let dominantShare = 0;
     if (orgUsage) {
-      const poolType = getJobPoolType(job, config);
-      const pool = config.cluster.pools.find(p => p.type === poolType);
-      if (pool) {
+      const pools = jobPools(job);
+      let weightedDominant = 0;
+      let totalCpu = 0;
+      for (const poolType of pools) {
+        const pool = config.cluster.pools.find(p => p.type === poolType);
+        if (!pool) continue;
         const used =
           orgUsage[job.orgId]?.[poolType]
           ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
-        // Platform parity: availableDimension(total, externalUsage, reserved).
-        // Subtract both `externalUsage` (other tenants on the pool) and
-        // `reserved` (system overhead) from the capacity denominator.
         const ext = pool.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
         const total: Resources = {
           cpuMillis: Math.max(0, pool.total.cpuMillis - ext.cpuMillis - pool.reserved.cpuMillis),
@@ -167,9 +170,31 @@ const drfFairShare: ScoringFormula = {
         const memShare =
           total.memoryMiB > 0 ? used.memoryMiB / total.memoryMiB : 0;
         const gpuShare = total.gpu > 0 ? used.gpu / total.gpu : 0;
+        const poolDominant = Math.max(cpuShare, memShare, gpuShare);
 
-        dominantShare = Math.max(cpuShare, memShare, gpuShare);
+        const reqCpu = jobResInPool(job, poolType).cpuMillis;
+        weightedDominant += reqCpu * poolDominant;
+        totalCpu += reqCpu;
       }
+      dominantShare = totalCpu > 0
+        ? Math.min(1, Math.max(0, weightedDominant / totalCpu))
+        // Job requests no cpuMillis anywhere — fall back to the max dominant
+        // across touched pools so we still distinguish heavy orgs.
+        : pools.reduce<number>((acc, pt) => {
+            const pool = config.cluster.pools.find(p => p.type === pt);
+            if (!pool) return acc;
+            const used = orgUsage[job.orgId]?.[pt] ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+            const ext = pool.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
+            const total = {
+              cpuMillis: Math.max(0, pool.total.cpuMillis - ext.cpuMillis - pool.reserved.cpuMillis),
+              memoryMiB: Math.max(0, pool.total.memoryMiB - ext.memoryMiB - pool.reserved.memoryMiB),
+              gpu:       Math.max(0, pool.total.gpu       - ext.gpu       - pool.reserved.gpu),
+            };
+            const cs = total.cpuMillis > 0 ? used.cpuMillis / total.cpuMillis : 0;
+            const ms = total.memoryMiB > 0 ? used.memoryMiB / total.memoryMiB : 0;
+            const gs = total.gpu > 0 ? used.gpu / total.gpu : 0;
+            return Math.max(acc, cs, ms, gs);
+          }, 0);
     }
 
     // Weight by org priority: higher-priority orgs get a natural bonus
@@ -260,42 +285,54 @@ const balancedComposite: ScoringFormula = {
       + (1 - AGING_FLOOR)
         * Math.pow(t, AGING_EXPONENT);
 
-    // 3. Org load: org_cpus_in_pool / pool_total_cpu
-    //    CPU-only — AWS EKS measures and bills by vCPU,
-    //    so CPU is the authoritative dimension for load.
-    //    Ratio is unit-invariant: cpuMillis / cpuMillis.
+    // 3. Org load — cpuMillis-weighted across the pools the job touches
+    //    (§1.4 platform parity). For each requested pool, compute
+    //    load_t = org_cpuMillis_in_pool_t / effective_cpu_pool_t. Weight
+    //    each load by cpuMillis_t (the job's CPU slice in that pool) and
+    //    divide by the job's total cpuMillis. For single-pool jobs this
+    //    collapses to the original behaviour.
+    //
+    //    CPU-only on purpose — AWS EKS measures and bills by vCPU, so CPU
+    //    is the authoritative dimension for load.
     let orgLoad = 0;
     if (orgUsage) {
-      const poolType = getJobPoolType(job, config);
-      const pool =
-        config.cluster.pools.find(p => p.type === poolType);
-      if (pool) {
-        const used =
-          orgUsage[job.orgId]?.[poolType]
+      const pools = jobPools(job);
+      let weightedLoad = 0;
+      let totalCpu = 0;
+      let fallbackMax = 0; // used when the job's cpuMillis is 0 across all pools
+      for (const poolType of pools) {
+        const pool = config.cluster.pools.find(p => p.type === poolType);
+        if (!pool) continue;
+        const used = orgUsage[job.orgId]?.[poolType]
           ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
-        // Platform parity: use availableDimension(total, externalUsage, reserved)
-        // as the load-ratio denominator. Subtracting reserved and external
-        // consumers gives a truer picture of the capacity CRMQ can actually
-        // schedule into.
         const ext = pool.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 };
         const effectiveCpu = Math.max(
           0,
           pool.total.cpuMillis - ext.cpuMillis - pool.reserved.cpuMillis,
         );
-        orgLoad = effectiveCpu > 0
+        const loadT = effectiveCpu > 0
           ? Math.min(1, used.cpuMillis / effectiveCpu)
           // Numerator > 0 with denominator = 0 means the pool is fully
           // reserved/external — treat as saturated.
           : used.cpuMillis > 0 ? 1 : 0;
+
+        const reqCpu = jobResInPool(job, poolType).cpuMillis;
+        weightedLoad += reqCpu * loadT;
+        totalCpu += reqCpu;
+        if (loadT > fallbackMax) fallbackMax = loadT;
       }
+      orgLoad = totalCpu > 0
+        ? Math.min(1, Math.max(0, weightedLoad / totalCpu))
+        : fallbackMax;
     }
 
-    // 4. CPU-hours: vcpu_requested × estimatedDuration (hours).
-    //    Mirrors platform balanced-composite-scoring.strategy.ts:337,
-    //    which divides cpuMillis by 1000 internally before multiplying
-    //    by durationHrs. MAX_CPU_HOURS (=1000) stays expressed in
-    //    vCPU·hours, matching the platform default.
-    const vcpu = vcpuFromCpuMillis(job.resources.cpuMillis);
+    // 4. CPU-hours: vcpu_requested (summed across all pools) × duration (hrs).
+    //    Multi-pool jobs contribute every pool's CPU slice — mirrors the
+    //    platform aggregation where total CPU footprint drives the "big job"
+    //    penalty (balanced-composite-scoring.strategy.ts:337). Single-pool
+    //    jobs reduce to the original behaviour.
+    const totalsForCpuHrs = jobTotalResources(job);
+    const vcpu = vcpuFromCpuMillis(totalsForCpuHrs.cpuMillis);
     const cpuHours = vcpu * (job.estimatedDuration / 3600);
     const cpuHrsNorm = Math.min(
       1,

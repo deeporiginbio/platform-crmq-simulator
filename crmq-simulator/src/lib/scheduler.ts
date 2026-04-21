@@ -10,6 +10,7 @@
 
 import {
   type Resources,
+  type ResourcesByType,
   type Org,
   type Job,
   type ScoredJob,
@@ -25,7 +26,9 @@ import {
   type CompletionResult,
   type EvictionResult,
   type LogType,
-  getJobPoolType,
+  jobPools,
+  jobResInPool,
+  jobTotalResources,
 } from './types';
 import { createScoreFn } from './benchmark/scoring';
 import { normalizeFormulaType } from './config/formulas/registry';
@@ -87,7 +90,7 @@ export const DEFAULT_CONFIG: CRMQConfig = {
           memoryMiB: 0,
           gpu: 0,
         },
-        routeWhen: (job) => job.resources.gpu === 0,
+        routeWhen: (res) => res.gpu === 0,
       },
       {
         type: 'mason-gpu',
@@ -113,7 +116,7 @@ export const DEFAULT_CONFIG: CRMQConfig = {
           memoryMiB: 0,
           gpu: 0,
         },
-        routeWhen: (job) => job.resources.gpu > 0,
+        routeWhen: (res) => res.gpu > 0,
       },
     ],
   },
@@ -150,24 +153,55 @@ export const DEFAULT_ORGS: Org[] = [
 ];
 
 /**
- * Shorthand for PRESET_JOBS: vCPU + GB → canonical Resources (cpuMillis/memoryMiB).
- * Keeps the fixture table readable in UI units.
+ * Shorthand helpers for PRESET_JOBS.
+ *
+ * - `cpuReq(vcpu, gb)` → ResourcesByType keyed to `mason` (CPU-only pool).
+ * - `gpuReq(vcpu, gb, gpu)` → ResourcesByType keyed to `mason-gpu`.
+ * - `multiReq([...])` → merge several single-pool slices into a multi-pool
+ *   request (for jobs that straddle `mason` + `mason-gpu` concurrently, §1.4).
+ *
+ * These keep the fixture table readable in UI units (vCPU + GB).
  */
-const res = (vcpu: number, gb: number, gpu: number): Resources => ({
-  cpuMillis: cpuMillisFromVcpu(vcpu),
-  memoryMiB: memoryMiBFromGb(gb),
-  gpu,
+const cpuReq = (vcpu: number, gb: number): ResourcesByType => ({
+  mason: {
+    cpuMillis: cpuMillisFromVcpu(vcpu),
+    memoryMiB: memoryMiBFromGb(gb),
+    gpu: 0,
+  },
 });
 
+const gpuReq = (vcpu: number, gb: number, gpu: number): ResourcesByType => ({
+  'mason-gpu': {
+    cpuMillis: cpuMillisFromVcpu(vcpu),
+    memoryMiB: memoryMiBFromGb(gb),
+    gpu,
+  },
+});
+
+const multiReq = (slices: ResourcesByType[]): ResourcesByType =>
+  Object.assign({}, ...slices);
+
 export const PRESET_JOBS: Omit<Job, 'id' | 'enqueuedAt' | 'skipCount'>[] = [
-  { name: 'Ligand Prep',         orgId: 'deeporigin', userPriority: 3, toolPriority: 2, resources: res(  4,  16, 0), estimatedDuration:  45, ttl: Infinity },
-  { name: 'GPU Docking (large)', orgId: 'deeporigin', userPriority: 5, toolPriority: 4, resources: res(  8,  32, 4), estimatedDuration: 120, ttl: Infinity },
-  { name: 'Data Ingestion',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: res(  2,   8, 0), estimatedDuration:  30, ttl: Infinity },
-  { name: 'ML Training',         orgId: 'org-beta',   userPriority: 4, toolPriority: 3, resources: res( 16,  64, 2), estimatedDuration: 180, ttl: Infinity },
-  { name: 'API Serving',         orgId: 'org-gamma',  userPriority: 5, toolPriority: 5, resources: res(  4,  16, 0), estimatedDuration:  60, ttl: Infinity },
-  { name: 'Pocket Finding',      orgId: 'org-gamma',  userPriority: 3, toolPriority: 2, resources: res(  8,  32, 2), estimatedDuration:  90, ttl: Infinity },
-  { name: 'Parallel Docking ×4', orgId: 'deeporigin', userPriority: 4, toolPriority: 3, resources: res( 32, 128, 8), estimatedDuration: 200, ttl: Infinity },
-  { name: 'Quick Analysis',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: res(  2,   4, 0), estimatedDuration:  15, ttl: Infinity },
+  { name: 'Ligand Prep',         orgId: 'deeporigin', userPriority: 3, toolPriority: 2, resources: cpuReq(  4,  16),    estimatedDuration:  45, ttl: Infinity },
+  { name: 'GPU Docking (large)', orgId: 'deeporigin', userPriority: 5, toolPriority: 4, resources: gpuReq(  8,  32, 4), estimatedDuration: 120, ttl: Infinity },
+  { name: 'Data Ingestion',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: cpuReq(  2,   8),    estimatedDuration:  30, ttl: Infinity },
+  { name: 'ML Training',         orgId: 'org-beta',   userPriority: 4, toolPriority: 3, resources: gpuReq( 16,  64, 2), estimatedDuration: 180, ttl: Infinity },
+  { name: 'API Serving',         orgId: 'org-gamma',  userPriority: 5, toolPriority: 5, resources: cpuReq(  4,  16),    estimatedDuration:  60, ttl: Infinity },
+  { name: 'Pocket Finding',      orgId: 'org-gamma',  userPriority: 3, toolPriority: 2, resources: gpuReq(  8,  32, 2), estimatedDuration:  90, ttl: Infinity },
+  { name: 'Parallel Docking ×4', orgId: 'deeporigin', userPriority: 4, toolPriority: 3, resources: gpuReq( 32, 128, 8), estimatedDuration: 200, ttl: Infinity },
+  { name: 'Quick Analysis',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: cpuReq(  2,   4),    estimatedDuration:  15, ttl: Infinity },
+  // §1.4 multi-pool example: a hybrid CPU+GPU workflow that holds capacity
+  // in both pools simultaneously (e.g. CPU-side data prep pipelined with
+  // GPU-side inference). Exercises the cpuMillis-weighted load-ratio path.
+  {
+    name: 'Hybrid ML Pipeline',
+    orgId: 'deeporigin',
+    userPriority: 4,
+    toolPriority: 3,
+    resources: multiReq([cpuReq(8, 32), gpuReq(8, 32, 2)]),
+    estimatedDuration: 150,
+    ttl: Infinity,
+  },
 ];
 
 
@@ -250,10 +284,46 @@ export const fits = (req: Resources, avail: Resources): boolean => {
   );
 };
 
-export const sumResources = (
-  jobs: Array<{ resources: Resources }>,
+/**
+ * Sum resource slices at a given pool across a set of jobs.
+ * Multi-pool jobs contribute only their slice for `poolType`. Jobs that
+ * don't touch the pool contribute zero.
+ */
+export const sumResourcesInPool = (
+  jobs: Array<{ resources: ResourcesByType }>,
+  poolType: string,
 ): Resources => {
-  return jobs.reduce<Resources>((acc, j) => add3(acc, j.resources), { ...ZERO });
+  let cpuMillis = 0;
+  let memoryMiB = 0;
+  let gpu = 0;
+  for (const j of jobs) {
+    const slice = j.resources[poolType];
+    if (!slice) continue;
+    cpuMillis += slice.cpuMillis;
+    memoryMiB += slice.memoryMiB;
+    gpu += slice.gpu;
+  }
+  return { cpuMillis, memoryMiB, gpu };
+};
+
+/**
+ * Sum resources across all pools a set of jobs touches. Useful for
+ * aggregate utilization sampling (total CPU/mem/GPU in flight regardless
+ * of pool). For per-pool accounting, use `sumResourcesInPool`.
+ */
+export const sumAllJobResources = (
+  jobs: Array<{ resources: ResourcesByType }>,
+): Resources => {
+  let cpuMillis = 0;
+  let memoryMiB = 0;
+  let gpu = 0;
+  for (const j of jobs) {
+    const total = jobTotalResources(j);
+    cpuMillis += total.cpuMillis;
+    memoryMiB += total.memoryMiB;
+    gpu += total.gpu;
+  }
+  return { cpuMillis, memoryMiB, gpu };
 };
 
 export const cloneZero = (): Resources => {
@@ -304,10 +374,16 @@ export const getPool = (config: CRMQConfig, poolType: string): ResourcePool => {
 };
 
 /**
+ * Pool-local effective total (no account-level coupling applied).
+ *
  * Platform parity: `availableDimension(total, externalUsage, reserved)` — the
  * effective capacity pool that CRMQ can dispatch into, before subtracting
  * CRMQ's own in-flight jobs. See
  *   platform/apps/tools-service/.../balanced-composite-scoring.strategy.ts
+ *
+ * When a pool is coupled via `accountResourceId`, prefer
+ * `getPoolEffectiveCap(config, activeJobs, poolType)` — that variant folds
+ * in the shared ceiling.
  */
 export const poolEffectiveTotal = (pool: ResourcePool): Resources => {
   const externalUsage = pool.externalUsage ?? { ...ZERO };
@@ -318,16 +394,69 @@ export const poolEffectiveTotal = (pool: ResourcePool): Resources => {
   };
 };
 
-export const getPoolAvailability = (
+/**
+ * Effective total capacity of a pool for dispatch/scoring denominators,
+ * accounting for §3.4 shared account-resource coupling.
+ *
+ * - Local bound: `pool.total − externalUsage − reserved`.
+ * - Coupled bound (when `pool.accountResourceId` set): the account
+ *   resource's `totalCapacity − externalUsage − Σ(usage in sibling pools
+ *   sharing the same accountResourceId, excluding this pool)`.
+ * - Effective cap = min(local, coupled) per-dimension.
+ *
+ * This returns the *total* ceiling (not remaining availability). Subtract
+ * the pool's own CRMQ usage from this to get headroom.
+ */
+export const getPoolEffectiveCap = (
   config: CRMQConfig,
   activeJobs: RunningJob[],
   poolType: string,
 ): Resources => {
   const pool = getPool(config, poolType);
-  const poolJobs = activeJobs.filter(j => getJobPoolType(j, config) === poolType);
-  const inUse = sumResources(poolJobs);
-  // Platform parity: effective capacity = total − externalUsage − reserved − CRMQ in-flight.
-  return sub3(poolEffectiveTotal(pool), inUse);
+  const local = poolEffectiveTotal(pool);
+  const arId = pool.accountResourceId;
+  if (!arId) return local;
+
+  const ar = config.accountResources?.find(a => a.id === arId);
+  if (!ar) return local; // misconfigured — fall back to local bound
+
+  // Aggregate live usage in sibling pools that share this account resource,
+  // excluding this pool itself. This pool's own usage is NOT subtracted
+  // from the ceiling — the availability layer does that.
+  const siblings = config.cluster.pools.filter(
+    p => p.accountResourceId === arId && p.type !== poolType,
+  );
+  let sibCpu = 0, sibMem = 0, sibGpu = 0;
+  for (const s of siblings) {
+    const u = sumResourcesInPool(activeJobs, s.type);
+    sibCpu += u.cpuMillis;
+    sibMem += u.memoryMiB;
+    sibGpu += u.gpu;
+  }
+
+  const arExt = ar.externalUsage ?? { ...ZERO };
+  const accountHeadroom: Resources = {
+    cpuMillis: Math.max(0, ar.totalCapacity.cpuMillis - arExt.cpuMillis - sibCpu),
+    memoryMiB: Math.max(0, ar.totalCapacity.memoryMiB - arExt.memoryMiB - sibMem),
+    gpu:       Math.max(0, ar.totalCapacity.gpu       - arExt.gpu       - sibGpu),
+  };
+
+  return {
+    cpuMillis: Math.min(local.cpuMillis, accountHeadroom.cpuMillis),
+    memoryMiB: Math.min(local.memoryMiB, accountHeadroom.memoryMiB),
+    gpu:       Math.min(local.gpu,       accountHeadroom.gpu),
+  };
+};
+
+export const getPoolAvailability = (
+  config: CRMQConfig,
+  activeJobs: RunningJob[],
+  poolType: string,
+): Resources => {
+  // Multi-pool jobs contribute only their slice for this pool type.
+  const inUse = sumResourcesInPool(activeJobs, poolType);
+  // Platform parity: effective capacity (with §3.4 coupling) − CRMQ in-flight.
+  return sub3(getPoolEffectiveCap(config, activeJobs, poolType), inUse);
 };
 
 export const getAvailabilityPerPool = (
@@ -394,9 +523,12 @@ export const completeJobs = (
     const rem = j.remainingDuration - dt;
     if (rem <= 0) {
       completed.push({ ...j, completedAt: now });
-      const poolType = getJobPoolType(j, config);
+      // Release each pool slice the job was holding (multi-pool aware).
       const orgPools = updOrgUsage[j.orgId] ?? zeroPoolUsage(config);
-      orgPools[poolType] = sub3(orgPools[poolType], j.resources);
+      for (const poolType of jobPools(j)) {
+        const slice = jobResInPool(j, poolType);
+        orgPools[poolType] = sub3(orgPools[poolType] ?? cloneZero(), slice);
+      }
       updOrgUsage[j.orgId] = orgPools;
       logFn?.(now, `🏁 COMPLETE | ${j.name} [${j.id}] — ran ${fmtTime(j.estimatedDuration)}, resources released`, 'success');
     } else {
@@ -471,6 +603,55 @@ export const runScheduler = (
 
   let dispatchedCount = 0;
 
+  // Multi-pool quota check (§1.4 platform parity): a job clears Gate 1 only
+  // if, in every pool it requests from, the org's resolved quota has room
+  // for that pool slice. All-or-nothing — partial admission is not allowed.
+  const quotaPasses = (j: Job, currentOrgUsage: OrgUsageMap): boolean => {
+    const org = orgs.find(o => o.id === j.orgId);
+    const orgPools = currentOrgUsage[j.orgId] ?? zeroPoolUsage(config);
+    for (const poolType of jobPools(j)) {
+      const pool = config.cluster.pools.find(p => p.type === poolType);
+      const limits = resolveOrgPoolCap(org, poolType, pool);
+      const used = orgPools[poolType] ?? cloneZero();
+      const req = jobResInPool(j, poolType);
+      if (
+        used.cpuMillis + req.cpuMillis > limits.cpuMillis ||
+        used.memoryMiB + req.memoryMiB > limits.memoryMiB ||
+        used.gpu       + req.gpu       > limits.gpu
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Multi-pool capacity check: every requested pool must fit simultaneously.
+  const capacityPasses = (j: Job, avail: Record<string, Resources>): boolean => {
+    for (const poolType of jobPools(j)) {
+      const a = avail[poolType];
+      if (!a) return false;
+      if (!fits(jobResInPool(j, poolType), a)) return false;
+    }
+    return true;
+  };
+
+  // Admit a job: subtract its per-pool slices from availability and add to
+  // the org's per-pool usage. Returns updated state.
+  const admit = (
+    j: ScoredJob,
+    avail: Record<string, Resources>,
+    usage: OrgUsageMap,
+  ): { avail: Record<string, Resources>; usage: OrgUsageMap } => {
+    const newAvail = { ...avail };
+    const orgPools = { ...(usage[j.orgId] ?? zeroPoolUsage(config)) };
+    for (const poolType of jobPools(j)) {
+      const slice = jobResInPool(j, poolType);
+      newAvail[poolType] = sub3(newAvail[poolType], slice);
+      orgPools[poolType] = add3(orgPools[poolType] ?? cloneZero(), slice);
+    }
+    return { avail: newAvail, usage: { ...usage, [j.orgId]: orgPools } };
+  };
+
   // §3.2 / §3.4 platform parity: attempt every topN candidate this tick, in
   // score order. Each admission decrements availByPool so subsequent
   // candidates see real residual capacity. Jobs that fail a gate are left
@@ -478,20 +659,16 @@ export const runScheduler = (
   // we do NOT early-exit after the first successful dispatch.
   for (const job of topN) {
     const org = orgs.find(o => o.id === job.orgId);
-    const poolType = getJobPoolType(job, config);
-    const pool = config.cluster.pools.find(p => p.type === poolType);
-    const orgPoolLimits = resolveOrgPoolCap(org, poolType, pool);
-    const orgPools = no[job.orgId] ?? zeroPoolUsage(config);
-    const orgUsedInPool = orgPools[poolType] ?? cloneZero();
+    const pools = jobPools(job);
+    const primaryPool = pools[0] ?? 'unknown';
 
     // Gate 1: Org Quota (per-pool, resolved from percentage × pool.total)
-    const orgOk = (
-      orgUsedInPool.cpuMillis + job.resources.cpuMillis <= orgPoolLimits.cpuMillis &&
-      orgUsedInPool.memoryMiB + job.resources.memoryMiB <= orgPoolLimits.memoryMiB &&
-      orgUsedInPool.gpu       + job.resources.gpu       <= orgPoolLimits.gpu
-    );
-    if (!orgOk) {
-      logFn?.(now, `⛔ Gate 1 FAIL | ${job.name} [${job.id}] — ${org?.name ?? job.orgId} ${poolType} quota exceeded (SKIP)`, 'warn');
+    if (!quotaPasses(job, no)) {
+      logFn?.(
+        now,
+        `⛔ Gate 1 FAIL | ${job.name} [${job.id}] — ${org?.name ?? job.orgId} quota exceeded across [${pools.join(', ')}] (SKIP)`,
+        'warn',
+      );
       nq = nq.map(j => j.id === job.id ? { ...j, skipCount: (j.skipCount || 0) + 1 } : j);
       continue;
     }
@@ -502,11 +679,8 @@ export const runScheduler = (
       continue;
     }
 
-    // Gate 2: Pool Capacity (poolType already computed above)
-    const avail = availByPool[poolType];
-
-    // Gate 2: Pool Capacity
-    const capOk = fits(job.resources, avail);
+    // Gate 2: Pool Capacity — multi-pool jobs require ALL slices to fit.
+    const capOk = capacityPasses(job, availByPool);
     if (!capOk) {
       const newSkip = (job.skipCount || 0) + 1;
       // §3.4 wall-clock reservation trigger (platform parity: 600s default).
@@ -518,7 +692,7 @@ export const runScheduler = (
       nq = nq.map(j => j.id === job.id ? { ...j, skipCount: newSkip, firstGatedAt } : j);
       logFn?.(
         now,
-        `⛔ Gate 2 FAIL | ${job.name} [${job.id}] — ${poolType} pool capacity insufficient. ` +
+        `⛔ Gate 2 FAIL | ${job.name} [${job.id}] — capacity insufficient in [${pools.join(', ')}]. ` +
         `gated_for=${fmtTime(gatedFor)}/${fmtTime(sch.reservationThresholdSec)} (skip_count=${newSkip})`,
         'warn',
       );
@@ -551,39 +725,27 @@ export const runScheduler = (
         // fits is a valid candidate to keep utilization up while we wait.
         const candidates = ranked
           .filter(j => j.id !== job.id && (isBlockedReservTarget || j._score < job._score))
-          .filter(j => {
-            const bf_poolType = getJobPoolType(j, config);
-            return fits(j.resources, availByPool[bf_poolType]);
-          })
+          .filter(j => capacityPasses(j, availByPool))
           .filter(j => j.estimatedDuration <= job.estimatedDuration * sch.backfillMaxRatio);
 
         for (const bf of candidates) {
-          const bf_poolType = getJobPoolType(bf, config);
-          const bfOrgPools = no[bf.orgId] ?? zeroPoolUsage(config);
-          const bfOrgUsedInPool = bfOrgPools[bf_poolType] ?? cloneZero();
-          const bfOrg = orgs.find(o => o.id === bf.orgId);
-          const bfPool = config.cluster.pools.find(p => p.type === bf_poolType);
-          const bfLimits = resolveOrgPoolCap(bfOrg, bf_poolType, bfPool);
-          const bfOrgOk = (
-            bfOrgUsedInPool.cpuMillis + bf.resources.cpuMillis <= bfLimits.cpuMillis &&
-            bfOrgUsedInPool.memoryMiB + bf.resources.memoryMiB <= bfLimits.memoryMiB &&
-            bfOrgUsedInPool.gpu       + bf.resources.gpu       <= bfLimits.gpu
+          // Capacity and quota may have shifted after admitting earlier
+          // backfills this tick — re-check both against current state.
+          if (!quotaPasses(bf, no) || !capacityPasses(bf, availByPool)) continue;
+
+          na = [...na, { ...bf, startedAt: now, remainingDuration: bf.estimatedDuration }];
+          nq = nq.filter(j => j.id !== bf.id);
+          const admitted = admit(bf, availByPool, no);
+          availByPool = admitted.avail;
+          no = admitted.usage;
+          logFn?.(
+            now,
+            `🔀 BACKFILL | ${bf.name} [${bf.id}] → [${jobPools(bf).join(', ')}] — fits gap, dur ${fmtTime(bf.estimatedDuration)} ≤ ${sch.backfillMaxRatio * 100}% of blocked`,
+            'success',
           );
-          // Capacity may have dropped after admitting earlier candidates
-          // this tick — re-check fits against the *current* availability.
-          const bfFits = fits(bf.resources, availByPool[bf_poolType]);
-          if (bfOrgOk && bfFits) {
-            na = [...na, { ...bf, startedAt: now, remainingDuration: bf.estimatedDuration }];
-            nq = nq.filter(j => j.id !== bf.id);
-            const bfDispPools = { ...bfOrgPools };
-            bfDispPools[bf_poolType] = add3(bfDispPools[bf_poolType], bf.resources);
-            no = { ...no, [bf.orgId]: bfDispPools };
-            availByPool[bf_poolType] = sub3(availByPool[bf_poolType], bf.resources);
-            logFn?.(now, `🔀 BACKFILL | ${bf.name} [${bf.id}] — fits gap, dur ${fmtTime(bf.estimatedDuration)} ≤ ${sch.backfillMaxRatio * 100}% of blocked`, 'success');
-            dispatchedCount += 1;
-            // Allow multiple backfills per blocked top-N job — each helps
-            // keep utilization up while we wait for the blocker to fit.
-          }
+          dispatchedCount += 1;
+          // Allow multiple backfills per blocked top-N job — each helps
+          // keep utilization up while we wait for the blocker to fit.
         }
       }
       continue;
@@ -591,19 +753,24 @@ export const runScheduler = (
 
     // ✅ DISPATCH
     const wait = now - job.enqueuedAt;
-    // Log in UI units (vCPU + GB) — model uses cpuMillis + memoryMiB internally.
-    const vcpu = vcpuFromCpuMillis(job.resources.cpuMillis);
-    const gb = gbFromMemoryMiB(job.resources.memoryMiB);
-    logFn?.(now, `✅ DISPATCH | ${job.name} [${job.id}] → ${poolType} — score=${Math.round(job._score).toLocaleString()}, wait=${fmtTime(wait)}, CPU:${vcpu} MEM:${gb}GB GPU:${job.resources.gpu}`, 'success');
+    // Log in UI units (vCPU + GB) across all requested pools.
+    const totals = jobTotalResources(job);
+    const vcpu = vcpuFromCpuMillis(totals.cpuMillis);
+    const gb = gbFromMemoryMiB(totals.memoryMiB);
+    const routeLabel = pools.length === 1 ? primaryPool : `[${pools.join('+')}]`;
+    logFn?.(
+      now,
+      `✅ DISPATCH | ${job.name} [${job.id}] → ${routeLabel} — score=${Math.round(job._score).toLocaleString()}, wait=${fmtTime(wait)}, CPU:${vcpu} MEM:${gb}GB GPU:${totals.gpu}`,
+      'success',
+    );
 
     // Dispatching removes the job from the queue; `firstGatedAt` tracking
     // is implicitly cleared because we filter the job out of `nq` here.
     na = [...na, { ...job, startedAt: now, remainingDuration: job.estimatedDuration }];
     nq = nq.filter(j => j.id !== job.id);
-    const dispOrgPools = { ...(no[job.orgId] ?? zeroPoolUsage(config)) };
-    dispOrgPools[poolType] = add3(dispOrgPools[poolType], job.resources);
-    no = { ...no, [job.orgId]: dispOrgPools };
-    availByPool[poolType] = sub3(availByPool[poolType], job.resources);
+    const admitted = admit(job, availByPool, no);
+    availByPool = admitted.avail;
+    no = admitted.usage;
 
     if (nr && nt === job.id) {
       nr = false; nt = null;

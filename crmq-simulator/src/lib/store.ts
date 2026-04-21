@@ -11,7 +11,7 @@
  */
 
 import { create } from 'zustand';
-import type { CRMQConfig, Org, Resources } from './types';
+import type { AccountResource, CRMQConfig, Org, Resources } from './types';
 import { DEFAULT_CONFIG, DEFAULT_ORGS } from './scheduler';
 import { hydrateConfig } from './persistence';
 
@@ -34,11 +34,15 @@ interface SerializedActive {
         reserved: Resources;
         /** Optional on the wire for backward-compat; defaulted to zero on hydrate. */
         externalUsage?: Resources;
+        /** Optional account-resource coupling key (§3.4). */
+        accountResourceId?: string;
       }>;
     };
     ttlDefault: number;
     formulaType?: CRMQConfig['formulaType'];
     formulaParams?: CRMQConfig['formulaParams'];
+    /** Optional shared account-level resources (§3.4). */
+    accountResources?: AccountResource[];
   };
   orgs: Org[];
 }
@@ -53,6 +57,7 @@ const stripForStorage = (cfg: CRMQConfig) => ({
   ttlDefault: cfg.ttlDefault,
   formulaType: cfg.formulaType,
   formulaParams: cfg.formulaParams,
+  accountResources: cfg.accountResources,
 });
 
 const MIGRATION_KEY = 'crmq:migrated-v1';

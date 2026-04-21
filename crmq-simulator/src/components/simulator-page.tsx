@@ -5,8 +5,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Box, Button, Group, Stack, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { getJobPoolType } from '@/lib/types';
-import { sumResources, sub3, fmtTime } from '@/lib/scheduler';
+import { sumResourcesInPool, sub3, fmtTime } from '@/lib/scheduler';
 import { useConfigStore } from '@/lib/store';
 import { normalizeFormulaType } from '@/lib/config/formulas/registry';
 import { useSimStore } from '@/lib/sim-store';
@@ -66,13 +65,12 @@ export const SimulatorPage = () => {
   };
   const formulaLabel = FORMULA_LABELS[normalizeFormulaType(cfg.formulaType ?? 'balanced_composite')] ?? 'Current Weighted Score';
 
-  // Compute per-pool data for display (memoized)
+  // Compute per-pool data for display (memoized).
+  // Multi-pool jobs contribute their per-pool slice to each pool they touch
+  // via `sumResourcesInPool`.
   const poolDisplayData = useMemo(
     () => cfg.cluster.pools.map((pool) => {
-      const poolJobs = active.filter(
-        j => getJobPoolType(j, cfg) === pool.type,
-      );
-      const inUse = sumResources(poolJobs);
+      const inUse = sumResourcesInPool(active, pool.type);
       const avail = sub3(
         sub3(pool.total, pool.reserved),
         inUse,
