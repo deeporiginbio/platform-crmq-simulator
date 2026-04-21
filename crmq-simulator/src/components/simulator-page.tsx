@@ -153,7 +153,7 @@ export const SimulatorPage = () => {
           Formula: {formulaLabel}
         </Text>
         <Text size="xs" ff="monospace" c="grey.7">
-          TopN: {cfg.scheduler.topN} · Skip: {cfg.scheduler.skipThreshold} · Backfill: {cfg.scheduler.backfillMaxRatio}
+          TopN: {cfg.scheduler.topN} · Reserv: {cfg.scheduler.reservationThresholdSec}s · Backfill: {cfg.scheduler.backfillMaxRatio}
         </Text>
         <Text size="xs" ff="monospace" c="grey.7">
           Pools:{' '}

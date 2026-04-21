@@ -132,11 +132,11 @@ export const ConfigModal = ({ cfg, orgs, onSave, onClose }: ConfigModalProps) =>
             {tab === 'scheduler' && (
               <>
                 <div className={classes.formulaBox}>
-                  Top-N={'{'}topN{'}'} · skipThreshold={'{'}X{'}'} → Reservation Mode · Backfill ≤ ratio × blocked
+                  Top-N={'{'}topN{'}'} · gated_for ≥ reservationThresholdSec → Reservation Mode · Backfill ≤ ratio × blocked
                 </div>
                 <SimpleGrid cols={2} spacing="sm">
                   <CF label="Top N" value={sch.topN} onChange={(v) => setPath('scheduler.topN', v)} />
-                  <CF label="Skip Threshold" value={sch.skipThreshold} onChange={(v) => setPath('scheduler.skipThreshold', v)} />
+                  <CF label="Reservation Threshold (s)" value={sch.reservationThresholdSec} onChange={(v) => setPath('scheduler.reservationThresholdSec', v)} />
                   <CF label="Backfill Ratio" value={sch.backfillMaxRatio} onChange={(v) => setPath('scheduler.backfillMaxRatio', v)} step={0.05} />
                 </SimpleGrid>
               </>

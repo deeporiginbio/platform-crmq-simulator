@@ -22,6 +22,8 @@ export interface SerializablePool {
   quotaType: 'cpu' | 'gpu';
   total: Resources;
   reserved: Resources;
+  /** Optional on the wire for backward-compat; defaulted to zero on hydrate. */
+  externalUsage?: Resources;
 }
 
 export interface SerializableConfig {
@@ -62,6 +64,8 @@ export const hydrateConfig = (
   cluster: {
     pools: raw.cluster.pools.map((sp) => ({
       ...sp,
+      // Backward-compat: pools serialized before #5 didn't carry externalUsage.
+      externalUsage: sp.externalUsage ?? { cpuMillis: 0, memoryMiB: 0, gpu: 0 },
       routeWhen: sp.quotaType === 'gpu'
         ? (job: { resources: Resources }) =>
             job.resources.gpu > 0

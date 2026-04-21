@@ -700,8 +700,15 @@ const desBulkDispatch = (
     // Gate: Pool capacity
     if (!fits(job.resources, avail)) {
       job.skipCount = (job.skipCount || 0) + 1;
+      // §3.4 platform parity: wall-clock reservation trigger.
+      // `firstGatedAt` captures when this job was first capacity-gated;
+      // reservation mode engages once gated ≥ reservationThresholdSec.
+      if (job.firstGatedAt == null) {
+        job.firstGatedAt = state.simTime;
+      }
+      const gatedFor = state.simTime - job.firstGatedAt;
       if (
-        job.skipCount > sch.skipThreshold &&
+        gatedFor >= sch.reservationThresholdSec &&
         !reservMode
       ) {
         reservMode = true;

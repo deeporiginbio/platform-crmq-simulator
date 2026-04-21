@@ -32,6 +32,8 @@ interface SerializedActive {
         quotaType: 'cpu' | 'gpu';
         total: Resources;
         reserved: Resources;
+        /** Optional on the wire for backward-compat; defaulted to zero on hydrate. */
+        externalUsage?: Resources;
       }>;
     };
     ttlDefault: number;
