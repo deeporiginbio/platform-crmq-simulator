@@ -350,16 +350,19 @@ export const calcScore = (job: Job, now: number, config: CRMQConfig, orgs: Org[]
     const org = orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
     const s = config.scoring;
-    return (
+    const raw =
       org.priority       * s.orgWeight  +
       job.userPriority   * s.userWeight +
       job.toolPriority   * s.toolWeight +
-      wait               * s.agingFactor
-    );
+      wait               * s.agingFactor;
+    // NaN safety net (§1.6) — scoring never returns NaN.
+    return Number.isFinite(raw) ? raw : 0;
   }
 
-  // For all other formulas, delegate to the benchmark scoring registry
-  // Pass orgUsage so DRF, CFS, and Balanced Composite can access org resource state
+  // For all other formulas, delegate to the benchmark scoring registry.
+  // Pass orgUsage so DRF, CFS, and Balanced Composite can access org
+  // resource state. createScoreFn already wraps its result with a
+  // Number.isFinite guard (§1.6).
   const scoreFn = createScoreFn(formulaType);
   return scoreFn(job, now, config, orgs, orgUsage);
 };

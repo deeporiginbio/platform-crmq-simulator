@@ -18,6 +18,7 @@ import type {
   BalancedCompositeParams,
   StrictFifoParams,
 } from '../types';
+import { WEIGHT_SUM_TOLERANCE } from '../../benchmark/scoring';
 
 // ── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -28,30 +29,56 @@ export const currentWeightedSchema = z.object({
   agingFactor: z.number().min(0).max(1000),
 });
 
-export const normalizedWeightedSumSchema = z.object({
-  wTier: z.number().min(0).max(1),
-  wAge: z.number().min(0).max(1),
-  wUser: z.number().min(0).max(1),
-  wTool: z.number().min(0).max(1),
-  C: z.number().min(1).max(100),
-  tau: z.number().min(1).max(3600),
-});
+export const normalizedWeightedSumSchema = z
+  .object({
+    wTier: z.number().min(0).max(1),
+    wAge: z.number().min(0).max(1),
+    wUser: z.number().min(0).max(1),
+    wTool: z.number().min(0).max(1),
+    C: z.number().min(1).max(100),
+    tau: z.number().min(1).max(3600),
+  })
+  .superRefine((p, ctx) => {
+    // §1.6 platform parity: normalized weights must sum to 1.0.
+    const sum = p.wTier + p.wAge + p.wUser + p.wTool;
+    if (Math.abs(sum - 1.0) > WEIGHT_SUM_TOLERANCE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `weights (wTier + wAge + wUser + wTool) must sum to 1.0 (got ${sum.toFixed(4)})`,
+      });
+    }
+  });
 
 export const drfFairShareSchema = z.object({
   C: z.number().min(1).max(100),
   tau: z.number().min(1).max(3600),
 });
 
-export const balancedCompositeSchema = z.object({
-  wPriority: z.number().min(0).max(1),
-  wAging: z.number().min(0).max(1),
-  wLoad: z.number().min(0).max(1),
-  wCpuHrs: z.number().min(0).max(1),
-  agingHorizon: z.number().min(60).max(86400),
-  agingExponent: z.number().min(1).max(5),
-  agingFloor: z.number().min(0).max(0.5),
-  maxCpuHours: z.number().min(1).max(100000),
-});
+export const balancedCompositeSchema = z
+  .object({
+    wPriority: z.number().min(0).max(1),
+    wAging: z.number().min(0).max(1),
+    wLoad: z.number().min(0).max(1),
+    wCpuHrs: z.number().min(0).max(1),
+    agingHorizon: z.number().min(60).max(86400),
+    agingExponent: z.number().min(1).max(5),
+    agingFloor: z.number().min(0).max(0.5),
+    maxCpuHours: z.number().min(1).max(100000),
+  })
+  .superRefine((p, ctx) => {
+    // §1.6 platform parity
+    // (`balanced-composite-scoring.strategy.ts:263-291`):
+    // the four weights must sum to 1.0 within WEIGHT_SUM_TOLERANCE.
+    const sum = p.wPriority + p.wAging + p.wLoad + p.wCpuHrs;
+    if (Math.abs(sum - 1.0) > WEIGHT_SUM_TOLERANCE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `weights (wPriority + wAging + wLoad + wCpuHrs) must sum to 1.0 ` +
+          `(got ${sum.toFixed(4)}, tolerance ${WEIGHT_SUM_TOLERANCE})`,
+      });
+    }
+  });
 
 export const strictFifoSchema = z.object({});
 
@@ -142,6 +169,21 @@ export const FORMULA_REGISTRY: Record<FormulaType, FormulaDefinition<any>> = {
   balanced_composite: balancedComposite,
   strict_fifo: strictFifo,
 };
+
+// §1.6 bootstrap validation — every registered formula's defaultParams
+// must satisfy its own schema (weight sums, positive constants, bounds).
+// If a default ever drifts out of spec the module fails to load rather
+// than quietly feeding skewed scores to the scheduler.
+for (const def of Object.values(FORMULA_REGISTRY)) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = (def.schema as z.ZodTypeAny).safeParse(def.defaultParams);
+  if (!result.success) {
+    throw new Error(
+      `[formula-registry] Default params for "${def.id}" failed validation: ` +
+      result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+    );
+  }
+}
 
 export const FORMULA_LIST = Object.values(FORMULA_REGISTRY);
 

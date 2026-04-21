@@ -54,6 +54,70 @@ export interface ScoringFormula {
   defaultParams: Record<string, number>;
 }
 
+// ── Config Validation (§1.6 platform parity) ─────────────────────────────
+
+/**
+ * Tolerance for the weight-sum check. Mirrors the platform's
+ * `WEIGHT_SUM_TOLERANCE` in
+ * `apps/tools-service/src/modules/priority-scoring/balanced-composite-scoring.interfaces.ts`.
+ *
+ * Any formula whose defaultParams includes normalized weight keys (those
+ * starting with a lowercase "w", e.g. `wPriority`, `wAging`) must have
+ * those weights sum to 1.0 within this tolerance, or registration fails.
+ */
+export const WEIGHT_SUM_TOLERANCE = 0.001;
+
+/**
+ * Validate a ScoringFormula's defaultParams at registration time.
+ *
+ * Platform parity (§1.6, `BalancedCompositeScoringStrategy.validateScoringConfig`
+ * in `balanced-composite-scoring.strategy.ts`):
+ *
+ *   - Σ of weight-prefixed ("w*") params must equal 1.0 within
+ *     WEIGHT_SUM_TOLERANCE. Formulas with no weight keys (e.g. strictFIFO,
+ *     drf) skip this check.
+ *   - maxCpuHours, maxPriority, agingHorizon, agingHorizonSec must be > 0
+ *     when present in defaultParams.
+ *
+ * Invalid formulas throw at registration — we'd rather crash on startup
+ * than produce silent NaNs or div-by-zero downstream.
+ */
+export const validateScoringConfig = (formula: ScoringFormula): void => {
+  const p = formula.defaultParams ?? {};
+
+  // Weight-sum check: only applies to params named like w* (wPriority,
+  // wAging, wLoad, wCpuHrs, wTier, wAge, …). Scalar multipliers in legacy
+  // formulas (orgWeight, agingFactor, etc.) don't start with lowercase "w"
+  // and are intentionally skipped.
+  const weightKeys = Object.keys(p).filter((k) => /^w[A-Z]/.test(k));
+  if (weightKeys.length > 0) {
+    const sum = weightKeys.reduce((acc, k) => acc + (p[k] ?? 0), 0);
+    if (!Number.isFinite(sum) || Math.abs(sum - 1.0) > WEIGHT_SUM_TOLERANCE) {
+      throw new Error(
+        `[scoring] Formula "${formula.id}" weights must sum to 1.0 ` +
+        `(got ${sum.toFixed(4)}, tolerance ${WEIGHT_SUM_TOLERANCE}). ` +
+        `Weight keys: ${weightKeys.join(', ')}.`,
+      );
+    }
+  }
+
+  const mustBePositive: ReadonlyArray<string> = [
+    'maxCpuHours',
+    'maxPriority',
+    'agingHorizon',
+    'agingHorizonSec',
+  ];
+  for (const key of mustBePositive) {
+    if (p[key] === undefined) continue;
+    const v = p[key];
+    if (!Number.isFinite(v) || v <= 0) {
+      throw new Error(
+        `[scoring] Formula "${formula.id}" has "${key}" = ${v}; must be > 0.`,
+      );
+    }
+  }
+};
+
 // ── Built-in Formulas ─────────────────────────────────────────────────────
 
 /**
@@ -251,15 +315,17 @@ const balancedComposite: ScoringFormula = {
   description:
     'Production formula: org priority, blended aging'
     + ' (10% linear floor + 90% quadratic, full at 6 h),'
-    + ' inverse org CPU load, and inverse log-normalized'
-    + ' CPU-hours. All normalized to [0,1].',
+    + ' inverse org CPU load (cpuMillis-weighted across pools),'
+    + ' and inverse log-normalized CPU-hours (saturating at 1000'
+    + ' vCPU·hours). All terms normalized to [0,1]; weights sum'
+    + ' to 1.0 (validated at registration).',
   reference: 'Custom (Deep Origin team-designed)',
   score: (job, now, config, orgs, orgUsage) => {
     const org =
       orgs.find(o => o.id === job.orgId) ?? { priority: 3 };
     const wait = Math.max(0, now - job.enqueuedAt);
 
-    // Configurable weights
+    // Configurable weights — sum must equal 1.0 (validateScoringConfig).
     const wPriority = 0.35;
     const wAging = 0.25;
     const wLoad = 0.20;
@@ -269,7 +335,15 @@ const balancedComposite: ScoringFormula = {
     const AGING_HORIZON = 21600;   // 6 h — full boost at this wait
     const AGING_EXPONENT = 2;      // quadratic: slow start, steep end
     const AGING_FLOOR = 0.10;      // 10% linear floor — never fully zero
-    const MAX_CPU_HOURS = 1000;    // vCPU·hours — matches platform default
+    // Saturation ceiling for the inverse-CPU-hours term, in vCPU·hours.
+    // Platform parity: `maxCpuHours: 1000` in
+    // `balanced-composite-scoring.strategy.ts` (DEFAULTS). Unit chain:
+    //   vCPU              = cpuMillis / 1000
+    //   vCPU·hours        = vCPU × (duration_seconds / 3600)
+    //   cpuHrsNorm        = min(1, ln(1 + cpuHours) / ln(1 + MAX_CPU_HOURS))
+    // At 1000 vCPU·hours the normalized term saturates to 1.0, so the
+    // "big job" penalty stops growing beyond that point.
+    const MAX_CPU_HOURS = 1000;
     const maxPriority = 5;
 
     // 1. Normalized org priority [0, 1]
@@ -294,12 +368,17 @@ const balancedComposite: ScoringFormula = {
     //
     //    CPU-only on purpose — AWS EKS measures and bills by vCPU, so CPU
     //    is the authoritative dimension for load.
+    //
+    //    Zero-total-CPU fallback (§1.6): when the job requests no cpuMillis
+    //    across any touched pool (e.g. a GPU-only job), return 0 to match
+    //    production (`balanced-composite-scoring.strategy.ts:383`:
+    //    `totalCpu > 0 ? weightedLoad/totalCpu : 0`). Such jobs aren't
+    //    hogging CPU, so they get the full load-factor boost.
     let orgLoad = 0;
     if (orgUsage) {
       const pools = jobPools(job);
       let weightedLoad = 0;
       let totalCpu = 0;
-      let fallbackMax = 0; // used when the job's cpuMillis is 0 across all pools
       for (const poolType of pools) {
         const pool = config.cluster.pools.find(p => p.type === poolType);
         if (!pool) continue;
@@ -311,38 +390,60 @@ const balancedComposite: ScoringFormula = {
           pool.total.cpuMillis - ext.cpuMillis - pool.reserved.cpuMillis,
         );
         const loadT = effectiveCpu > 0
-          ? Math.min(1, used.cpuMillis / effectiveCpu)
+          ? Math.min(1, Math.max(0, used.cpuMillis / effectiveCpu))
           // Numerator > 0 with denominator = 0 means the pool is fully
-          // reserved/external — treat as saturated.
+          // reserved/external — treat as saturated. Zero/zero → 0.
           : used.cpuMillis > 0 ? 1 : 0;
 
         const reqCpu = jobResInPool(job, poolType).cpuMillis;
-        weightedLoad += reqCpu * loadT;
-        totalCpu += reqCpu;
-        if (loadT > fallbackMax) fallbackMax = loadT;
+        if (reqCpu > 0) {
+          weightedLoad += reqCpu * loadT;
+          totalCpu += reqCpu;
+        }
       }
       orgLoad = totalCpu > 0
         ? Math.min(1, Math.max(0, weightedLoad / totalCpu))
-        : fallbackMax;
+        : 0;
+      if (!Number.isFinite(orgLoad)) orgLoad = 0;
     }
 
     // 4. CPU-hours: vcpu_requested (summed across all pools) × duration (hrs).
     //    Multi-pool jobs contribute every pool's CPU slice — mirrors the
     //    platform aggregation where total CPU footprint drives the "big job"
-    //    penalty (balanced-composite-scoring.strategy.ts:337). Single-pool
-    //    jobs reduce to the original behaviour.
+    //    penalty (`balanced-composite-scoring.strategy.ts:337`,
+    //    `(cpuMillisRequested / 1000) * (estimatedDurationSec / 3600)`).
+    //    Single-pool jobs reduce to the original behaviour.
+    //
+    //    NaN guards mirror the platform's cpuHrsNorm (§1.6): non-finite
+    //    inputs, non-finite or zero denominator, and non-finite normalized
+    //    result all collapse to 0 (no size penalty).
     const totalsForCpuHrs = jobTotalResources(job);
     const vcpu = vcpuFromCpuMillis(totalsForCpuHrs.cpuMillis);
-    const cpuHours = vcpu * (job.estimatedDuration / 3600);
-    const cpuHrsNorm = Math.min(
-      1,
-      Math.log(1 + cpuHours) / Math.log(1 + MAX_CPU_HOURS),
-    );
+    const rawCpuHours = vcpu * (job.estimatedDuration / 3600);
+    let cpuHrsNorm: number;
+    if (!Number.isFinite(rawCpuHours)) {
+      cpuHrsNorm = 0;
+    } else {
+      const cpuHours = Math.max(0, rawCpuHours);
+      const denom = Math.log(1 + MAX_CPU_HOURS);
+      if (!Number.isFinite(denom) || denom <= 0) {
+        cpuHrsNorm = 0;
+      } else {
+        const normalized = Math.log(1 + cpuHours) / denom;
+        cpuHrsNorm = Number.isFinite(normalized)
+          ? Math.min(1, Math.max(0, normalized))
+          : 0;
+      }
+    }
 
-    return wPriority * orgPriorityNorm
-         + wAging   * aging
-         + wLoad    * (1 - orgLoad)
-         + wCpuHrs  * (1 - cpuHrsNorm);
+    const score =
+        wPriority * orgPriorityNorm
+      + wAging    * aging
+      + wLoad     * (1 - orgLoad)
+      + wCpuHrs   * (1 - cpuHrsNorm);
+
+    // Final NaN safety net — any upstream non-finite value collapses to 0.
+    return Number.isFinite(score) ? score : 0;
   },
   defaultParams: {
     wPriority: 0.35,
@@ -353,6 +454,7 @@ const balancedComposite: ScoringFormula = {
     agingExponent: 2,
     agingFloor: 0.10,
     maxCpuHours: 1000,
+    maxPriority: 5,
   },
 };
 
@@ -376,9 +478,14 @@ const strictFIFO: ScoringFormula = {
 
 const _registry = new Map<string, ScoringFormula>();
 
-// Register built-in formulas
+// Register built-in formulas. validateScoringConfig runs on every entry —
+// if defaults ever drift out of spec (e.g. weights no longer sum to 1.0),
+// the module fails to load instead of quietly producing skewed scores.
 [currentWeightedScore, normalizedWeightedSum, drfFairShare, balancedComposite, strictFIFO]
-  .forEach(f => _registry.set(f.id, f));
+  .forEach(f => {
+    validateScoringConfig(f);
+    _registry.set(f.id, f);
+  });
 
 /**
  * Get all registered formulas.
@@ -391,18 +498,27 @@ export const getFormulas = (): ScoringFormula[] => Array.from(_registry.values()
 export const getFormula = (id: string): ScoringFormula | undefined => _registry.get(id);
 
 /**
- * Register a custom formula (for extensibility).
+ * Register a custom formula (for extensibility). Throws if the formula's
+ * defaultParams fail validation (§1.6 — weight sum, positive constants).
  */
 export const registerFormula = (formula: ScoringFormula): void => {
+  validateScoringConfig(formula);
   _registry.set(formula.id, formula);
 };
 
 /**
  * Create a ScoreFn from a formula ID that can be passed to the DES engine.
  * Falls back to the current production formula if ID not found.
+ *
+ * The returned ScoreFn is wrapped with a NaN safety net — any non-finite
+ * result from the underlying formula collapses to 0, so the scheduler
+ * never has to compare NaN against a valid score (§1.6).
  */
 export const createScoreFn = (formulaId: string): ScoreFn => {
   const formula = _registry.get(formulaId);
-  if (!formula) return currentWeightedScore.score;
-  return formula.score;
+  const inner = formula ? formula.score : currentWeightedScore.score;
+  return (job, now, config, orgs, orgUsage) => {
+    const s = inner(job, now, config, orgs, orgUsage);
+    return Number.isFinite(s) ? s : 0;
+  };
 };
