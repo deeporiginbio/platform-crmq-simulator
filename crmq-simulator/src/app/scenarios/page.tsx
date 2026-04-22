@@ -8,6 +8,49 @@ import { SCENARIO_PRESETS } from '@/lib/benchmark';
 import type { ScenarioPreset, ArrivalPattern, JobSizeDistribution } from '@/lib/benchmark';
 import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
 
+// ── Periodic template resource aggregation ─────────────────────────────────
+// A template may declare either flat cpuMillis/memoryMiB/gpu OR per-pool
+// `resourcesByType`. When `resourcesByType` is set the flat fields are
+// ignored by the generator — so the UI MUST aggregate the per-pool slices
+// (§1.4 multi-pool) or the table shows 0 for every column.
+interface TemplateTotals {
+  cpu: number;
+  memory: number;
+  gpu: number;
+  multiPool: boolean;
+  breakdown: Array<{ pool: string; cpu: number; memory: number; gpu: number }>;
+}
+
+const aggregateTemplate = (t: {
+  cpuMillis: number;
+  memoryMiB: number;
+  gpu: number;
+  resourcesByType?: Record<string, { cpuMillis: number; memoryMiB: number; gpu: number }>;
+}): TemplateTotals => {
+  if (t.resourcesByType && Object.keys(t.resourcesByType).length > 0) {
+    const breakdown = Object.entries(t.resourcesByType).map(([pool, slice]) => ({
+      pool,
+      cpu: vcpuFromCpuMillis(slice.cpuMillis),
+      memory: gbFromMemoryMiB(slice.memoryMiB),
+      gpu: slice.gpu,
+    }));
+    return {
+      cpu: breakdown.reduce((s, b) => s + b.cpu, 0),
+      memory: breakdown.reduce((s, b) => s + b.memory, 0),
+      gpu: breakdown.reduce((s, b) => s + b.gpu, 0),
+      multiPool: breakdown.length > 1,
+      breakdown,
+    };
+  }
+  return {
+    cpu: vcpuFromCpuMillis(t.cpuMillis),
+    memory: gbFromMemoryMiB(t.memoryMiB),
+    gpu: t.gpu,
+    multiPool: false,
+    breakdown: [],
+  };
+};
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 const fmtDuration = (sec: number): string => {
@@ -433,24 +476,34 @@ const PeriodicMixInfo = ({ preset }: { preset: ScenarioPreset }) => {
   const templates = wc.arrivalPattern.templates;
 
   // Per-org aggregation
-  const orgSummary: Record<string, { jobs: number; totalCpu: number; totalMemory: number; templates: string[] }> = {};
+  const orgSummary: Record<string, { jobs: number; totalCpu: number; totalMemory: number; totalGpu: number; templates: string[] }> = {};
   for (const t of templates) {
     const count = Math.floor(wc.durationSeconds / t.intervalSeconds);
+    const totals = aggregateTemplate(t);
     if (!orgSummary[t.orgId]) {
-      orgSummary[t.orgId] = { jobs: 0, totalCpu: 0, totalMemory: 0, templates: [] };
+      orgSummary[t.orgId] = { jobs: 0, totalCpu: 0, totalMemory: 0, totalGpu: 0, templates: [] };
     }
     orgSummary[t.orgId].jobs += count;
-    orgSummary[t.orgId].totalCpu += count * vcpuFromCpuMillis(t.cpuMillis);
-    orgSummary[t.orgId].totalMemory += count * gbFromMemoryMiB(t.memoryMiB);
+    orgSummary[t.orgId].totalCpu += count * totals.cpu;
+    orgSummary[t.orgId].totalMemory += count * totals.memory;
+    orgSummary[t.orgId].totalGpu += count * totals.gpu;
     orgSummary[t.orgId].templates.push(t.name);
   }
 
   const totalJobs = Object.values(orgSummary).reduce((s, o) => s + o.jobs, 0);
+  const anyMultiPool = templates.some(t => aggregateTemplate(t).multiPool);
 
   return (
     <Stack gap="sm">
       <Box>
-        <Text size="xs" fw={500} c="grey.7" mb={4}>Job Templates ({templates.length} types, ~{totalJobs} total jobs)</Text>
+        <Group gap="xs" mb={4}>
+          <Text size="xs" fw={500} c="grey.7">Job Templates ({templates.length} types, ~{totalJobs} total jobs)</Text>
+          {anyMultiPool && (
+            <Tooltip label="At least one template requests resources from multiple pools simultaneously (§1.4)." withArrow>
+              <Badge size="xs" variant="filled" color="violet">Multi-pool</Badge>
+            </Tooltip>
+          )}
+        </Group>
         <Table withTableBorder withColumnBorders>
           <Table.Thead>
             <Table.Tr>
@@ -470,29 +523,58 @@ const PeriodicMixInfo = ({ preset }: { preset: ScenarioPreset }) => {
           <Table.Tbody>
             {templates.map(t => {
               const count = Math.floor(wc.durationSeconds / t.intervalSeconds);
-              const cpuHours = (
-                count * vcpuFromCpuMillis(t.cpuMillis) * t.durationSeconds / 3600
-              ).toFixed(0);
+              const totals = aggregateTemplate(t);
+              const cpuHours = (count * totals.cpu * t.durationSeconds / 3600).toFixed(0);
+              const breakdown = totals.multiPool
+                ? totals.breakdown.map(b =>
+                    `${b.pool}: ${b.cpu} CPU · ${b.memory} GB${b.gpu > 0 ? ` · ${b.gpu} GPU` : ''}`
+                  ).join('\n')
+                : '';
+              const nameCell = totals.multiPool ? (
+                <Tooltip label={breakdown} withArrow multiline w={260} style={{ whiteSpace: 'pre-line' }}>
+                  <Group gap={4} wrap="nowrap">
+                    <Text size="xs" fw={500}>{t.name}</Text>
+                    <Badge size="xs" variant="light" color="violet">MP</Badge>
+                  </Group>
+                </Tooltip>
+              ) : (
+                <Text size="xs" fw={500}>{t.name}</Text>
+              );
+              const cpuCell = totals.multiPool ? (
+                <Tooltip label={breakdown} withArrow multiline w={260} style={{ whiteSpace: 'pre-line' }}>
+                  <Text size="xs" ff="monospace">
+                    {totals.cpu} ({totals.breakdown.map(b => b.cpu).join('+')})
+                  </Text>
+                </Tooltip>
+              ) : (
+                <Text size="xs" ff="monospace">{totals.cpu}</Text>
+              );
+              const memCell = totals.multiPool ? (
+                <Text size="xs" ff="monospace">
+                  {totals.memory} GB ({totals.breakdown.map(b => b.memory).join('+')})
+                </Text>
+              ) : (
+                <Text size="xs" ff="monospace">{totals.memory} GB</Text>
+              );
+              const gpuCell = totals.multiPool && totals.gpu > 0 ? (
+                <Text size="xs" ff="monospace">
+                  {totals.gpu} ({totals.breakdown.map(b => b.gpu).join('+')})
+                </Text>
+              ) : (
+                <Text size="xs" ff="monospace">{totals.gpu}</Text>
+              );
               return (
                 <Table.Tr key={t.name}>
-                  <Table.Td><Text size="xs" fw={500}>{t.name}</Text></Table.Td>
+                  <Table.Td>{nameCell}</Table.Td>
                   <Table.Td>
                     <Badge size="xs" variant="light" color={
                       t.orgId === 'deeporigin' ? 'blue' :
                       t.orgId === 'org-beta' ? 'green' : 'orange'
                     }>{t.orgId}</Badge>
                   </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" ff="monospace">
-                      {vcpuFromCpuMillis(t.cpuMillis)}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" ff="monospace">
-                      {gbFromMemoryMiB(t.memoryMiB)} GB
-                    </Text>
-                  </Table.Td>
-                  <Table.Td><Text size="xs" ff="monospace">{t.gpu}</Text></Table.Td>
+                  <Table.Td>{cpuCell}</Table.Td>
+                  <Table.Td>{memCell}</Table.Td>
+                  <Table.Td>{gpuCell}</Table.Td>
                   <Table.Td><Text size="xs" ff="monospace">{fmtDuration(t.durationSeconds)}</Text></Table.Td>
                   <Table.Td><Text size="xs" ff="monospace">{fmtDuration(t.intervalSeconds)}</Text></Table.Td>
                   <Table.Td><Text size="xs" ff="monospace" fw={600}>{count}</Text></Table.Td>

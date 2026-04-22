@@ -342,16 +342,25 @@ const applyEvent = (
   switch (event.type) {
     case 'JOB_ARRIVAL': {
       const tmpl = event.jobTemplate!;
-      // Traffic generator emits single-pool Resources; route to the correct
-      // pool via config-defined routeWhen predicates, then wrap as ResourcesByType.
-      const routedPool = routeSingleResource(tmpl.resources, config);
+      // Multi-pool templates (§1.4) carry `resourcesByType` directly — use
+      // it verbatim so the job holds capacity in every listed pool. Single-
+      // pool templates still go through the legacy `routeSingleResource`
+      // path so their flat {cpu, mem, gpu} lands in the right pool via the
+      // config-defined `routeWhen` predicates.
+      const resources: Job['resources'] = tmpl.resourcesByType
+        ? Object.fromEntries(
+            Object.entries(tmpl.resourcesByType).map(
+              ([pool, slice]) => [pool, { ...slice }],
+            ),
+          )
+        : { [routeSingleResource(tmpl.resources, config)]: { ...tmpl.resources } };
       const job: Job = {
         id: newJobId(),
         name: tmpl.name,
         orgId: tmpl.orgId,
         userPriority: tmpl.userPriority,
         toolPriority: tmpl.toolPriority,
-        resources: { [routedPool]: { ...tmpl.resources } },
+        resources,
         estimatedDuration:
           tmpl.estimatedDuration,
         ttl: tmpl.ttl,
