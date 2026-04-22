@@ -2,10 +2,53 @@
 
 'use client';
 
-import { Box, Badge, Group, Stack, Text, Table, Collapse } from '@mantine/core';
+import { Box, Badge, Group, Stack, Text, Table, Tooltip, Collapse } from '@mantine/core';
 import { useState } from 'react';
 import type { ScenarioPreset } from '@/lib/benchmark';
 import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';
+
+// ── Periodic template resource aggregation ─────────────────────────────────
+// A template may declare either flat cpuMillis/memoryMiB/gpu OR per-pool
+// `resourcesByType`. When `resourcesByType` is set the flat fields are
+// ignored by the generator — so the UI MUST aggregate the per-pool slices
+// (§1.4 multi-pool) or the table shows 0 for every column.
+interface TemplateTotals {
+  cpu: number;
+  memory: number;
+  gpu: number;
+  multiPool: boolean;
+  breakdown: Array<{ pool: string; cpu: number; memory: number; gpu: number }>;
+}
+
+const aggregateTemplate = (t: {
+  cpuMillis: number;
+  memoryMiB: number;
+  gpu: number;
+  resourcesByType?: Record<string, { cpuMillis: number; memoryMiB: number; gpu: number }>;
+}): TemplateTotals => {
+  if (t.resourcesByType && Object.keys(t.resourcesByType).length > 0) {
+    const breakdown = Object.entries(t.resourcesByType).map(([pool, slice]) => ({
+      pool,
+      cpu: vcpuFromCpuMillis(slice.cpuMillis),
+      memory: gbFromMemoryMiB(slice.memoryMiB),
+      gpu: slice.gpu,
+    }));
+    return {
+      cpu: breakdown.reduce((s, b) => s + b.cpu, 0),
+      memory: breakdown.reduce((s, b) => s + b.memory, 0),
+      gpu: breakdown.reduce((s, b) => s + b.gpu, 0),
+      multiPool: breakdown.length > 1,
+      breakdown,
+    };
+  }
+  return {
+    cpu: vcpuFromCpuMillis(t.cpuMillis),
+    memory: gbFromMemoryMiB(t.memoryMiB),
+    gpu: t.gpu,
+    multiPool: false,
+    breakdown: [],
+  };
+};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -232,9 +275,24 @@ export const ScenarioDetails = ({ preset, defaultCollapsed = false, compact = fa
           )}
 
           {/* Periodic mix template table */}
-          {wc.arrivalPattern.type === 'periodic_mix' && (
+          {wc.arrivalPattern.type === 'periodic_mix' && (() => {
+            const templates = wc.arrivalPattern.templates;
+            const anyMultiPool = templates.some(t => aggregateTemplate(t).multiPool);
+            return (
             <Box>
-              <Text size="xs" fw={500} c="grey.7" mb={4}>Job Templates</Text>
+              <Group gap="xs" mb={4}>
+                <Text size="xs" fw={500} c="grey.7">Job Templates</Text>
+                {anyMultiPool && (
+                  <Tooltip
+                    label="At least one template requests resources from multiple pools simultaneously (§1.4 multi-pool). CPU/Memory/GPU columns show the aggregate across pools with per-pool breakdown on hover."
+                    withArrow
+                    multiline
+                    w={260}
+                  >
+                    <Badge size="xs" variant="filled" color="violet">Multi-pool</Badge>
+                  </Tooltip>
+                )}
+              </Group>
               <Table withTableBorder withColumnBorders>
                 <Table.Thead>
                   <Table.Tr>
@@ -251,52 +309,87 @@ export const ScenarioDetails = ({ preset, defaultCollapsed = false, compact = fa
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
-                  {wc.arrivalPattern.templates.map(t => (
-                    <Table.Tr key={t.name}>
-                      <Table.Td><Text size="xs" fw={500}>{t.name}</Text></Table.Td>
-                      <Table.Td>
-                        <Badge size="xs" variant="light" color={
-                          t.orgId === 'deeporigin' ? 'blue' :
-                          t.orgId === 'org-beta' ? 'green' : 'orange'
-                        }>
-                          {t.orgId}
-                        </Badge>
-                      </Table.Td>
-                      <Table.Td>
+                  {templates.map(t => {
+                    const totals = aggregateTemplate(t);
+                    const breakdown = totals.multiPool
+                      ? totals.breakdown.map(b =>
+                          `${b.pool}: ${b.cpu} CPU · ${b.memory} GB${b.gpu > 0 ? ` · ${b.gpu} GPU` : ''}`
+                        ).join('\n')
+                      : '';
+                    const nameCell = totals.multiPool ? (
+                      <Tooltip label={breakdown} withArrow multiline w={260} style={{ whiteSpace: 'pre-line' }}>
+                        <Group gap={4} wrap="nowrap">
+                          <Text size="xs" fw={500}>{t.name}</Text>
+                          <Badge size="xs" variant="light" color="violet">MP</Badge>
+                        </Group>
+                      </Tooltip>
+                    ) : (
+                      <Text size="xs" fw={500}>{t.name}</Text>
+                    );
+                    const cpuCell = totals.multiPool ? (
+                      <Tooltip label={breakdown} withArrow multiline w={260} style={{ whiteSpace: 'pre-line' }}>
                         <Text size="xs" ff="monospace">
-                          {vcpuFromCpuMillis(t.cpuMillis)}
+                          {totals.cpu} ({totals.breakdown.map(b => b.cpu).join('+')})
                         </Text>
-                      </Table.Td>
-                      <Table.Td>
-                        <Text size="xs" ff="monospace">
-                          {gbFromMemoryMiB(t.memoryMiB)}
-                        </Text>
-                      </Table.Td>
-                      <Table.Td><Text size="xs" ff="monospace">{t.gpu}</Text></Table.Td>
-                      <Table.Td><Text size="xs" ff="monospace">{fmtDuration(t.durationSeconds)}</Text></Table.Td>
-                      <Table.Td><Text size="xs" ff="monospace">every {fmtDuration(t.intervalSeconds)}</Text></Table.Td>
-                      <Table.Td>
-                        <Text size="xs" ff="monospace">
-                          {Math.floor(wc.durationSeconds / t.intervalSeconds)}
-                        </Text>
-                      </Table.Td>
-                      <Table.Td><Text size="xs" ff="monospace">{t.userPriority}</Text></Table.Td>
-                      <Table.Td><Text size="xs" ff="monospace">{t.toolPriority}</Text></Table.Td>
-                    </Table.Tr>
-                  ))}
+                      </Tooltip>
+                    ) : (
+                      <Text size="xs" ff="monospace">{totals.cpu}</Text>
+                    );
+                    const memCell = totals.multiPool ? (
+                      <Text size="xs" ff="monospace">
+                        {totals.memory} ({totals.breakdown.map(b => b.memory).join('+')})
+                      </Text>
+                    ) : (
+                      <Text size="xs" ff="monospace">{totals.memory}</Text>
+                    );
+                    const gpuCell = totals.multiPool && totals.gpu > 0 ? (
+                      <Text size="xs" ff="monospace">
+                        {totals.gpu} ({totals.breakdown.map(b => b.gpu).join('+')})
+                      </Text>
+                    ) : (
+                      <Text size="xs" ff="monospace">{totals.gpu}</Text>
+                    );
+                    return (
+                      <Table.Tr key={t.name}>
+                        <Table.Td>{nameCell}</Table.Td>
+                        <Table.Td>
+                          <Badge size="xs" variant="light" color={
+                            t.orgId === 'deeporigin' ? 'blue' :
+                            t.orgId === 'org-beta' ? 'green' : 'orange'
+                          }>
+                            {t.orgId}
+                          </Badge>
+                        </Table.Td>
+                        <Table.Td>{cpuCell}</Table.Td>
+                        <Table.Td>{memCell}</Table.Td>
+                        <Table.Td>{gpuCell}</Table.Td>
+                        <Table.Td><Text size="xs" ff="monospace">{fmtDuration(t.durationSeconds)}</Text></Table.Td>
+                        <Table.Td><Text size="xs" ff="monospace">every {fmtDuration(t.intervalSeconds)}</Text></Table.Td>
+                        <Table.Td>
+                          <Text size="xs" ff="monospace">
+                            {Math.floor(wc.durationSeconds / t.intervalSeconds)}
+                          </Text>
+                        </Table.Td>
+                        <Table.Td><Text size="xs" ff="monospace">{t.userPriority}</Text></Table.Td>
+                        <Table.Td><Text size="xs" ff="monospace">{t.toolPriority}</Text></Table.Td>
+                      </Table.Tr>
+                    );
+                  })}
                 </Table.Tbody>
               </Table>
 
               {/* Per-org summary */}
               {!compact && (() => {
-                const orgSummary: Record<string, { jobs: number; totalCpu: number }> = {};
-                for (const t of wc.arrivalPattern.templates) {
+                const orgSummary: Record<string, { jobs: number; totalCpu: number; totalGpu: number }> = {};
+                for (const t of templates) {
                   const count = Math.floor(wc.durationSeconds / t.intervalSeconds);
+                  const totals = aggregateTemplate(t);
                   if (!orgSummary[t.orgId]) {
-                    orgSummary[t.orgId] = { jobs: 0, totalCpu: 0 };
+                    orgSummary[t.orgId] = { jobs: 0, totalCpu: 0, totalGpu: 0 };
                   }
                   orgSummary[t.orgId].jobs += count;
-                  orgSummary[t.orgId].totalCpu += count * vcpuFromCpuMillis(t.cpuMillis);
+                  orgSummary[t.orgId].totalCpu += count * totals.cpu;
+                  orgSummary[t.orgId].totalGpu += count * totals.gpu;
                 }
                 return (
                   <Box mt="xs">
@@ -312,6 +405,7 @@ export const ScenarioDetails = ({ preset, defaultCollapsed = false, compact = fa
                           </Badge>
                           <Text size="xs" ff="monospace" mt={2}>
                             {s.jobs} jobs · {s.totalCpu.toLocaleString()} total CPU-units
+                            {s.totalGpu > 0 ? ` · ${s.totalGpu.toLocaleString()} total GPU-units` : ''}
                           </Text>
                         </Box>
                       ))}
@@ -320,7 +414,8 @@ export const ScenarioDetails = ({ preset, defaultCollapsed = false, compact = fa
                 );
               })()}
             </Box>
-          )}
+            );
+          })()}
         </Stack>
       </Collapse>
     </Box>

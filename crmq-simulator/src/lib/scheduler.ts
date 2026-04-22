@@ -190,9 +190,16 @@ export const PRESET_JOBS: Omit<Job, 'id' | 'enqueuedAt' | 'skipCount'>[] = [
   { name: 'Pocket Finding',      orgId: 'org-gamma',  userPriority: 3, toolPriority: 2, resources: gpuReq(  8,  32, 2), estimatedDuration:  90, ttl: Infinity },
   { name: 'Parallel Docking ×4', orgId: 'deeporigin', userPriority: 4, toolPriority: 3, resources: gpuReq( 32, 128, 8), estimatedDuration: 200, ttl: Infinity },
   { name: 'Quick Analysis',      orgId: 'org-beta',   userPriority: 2, toolPriority: 1, resources: cpuReq(  2,   4),    estimatedDuration:  15, ttl: Infinity },
-  // §1.4 multi-pool example: a hybrid CPU+GPU workflow that holds capacity
+  // §1.4 multi-pool examples: hybrid CPU+GPU workflows that hold capacity
   // in both pools simultaneously (e.g. CPU-side data prep pipelined with
   // GPU-side inference). Exercises the cpuMillis-weighted load-ratio path.
+  //
+  // We include three shapes that stress different parts of routing + quota:
+  //   • Hybrid ML Pipeline  — balanced (8 vCPU mason + 8 vCPU mason-gpu, 2 GPU)
+  //   • Hybrid Inference    — GPU-heavy (4 vCPU mason + 16 vCPU mason-gpu, 4 GPU)
+  //   • MD+GPU Refinement   — CPU-heavy (32 vCPU mason + 8 vCPU mason-gpu, 1 GPU)
+  // Gate 1 (org quota) and Gate 2 (pool capacity) must both pass for every
+  // slice; these cover different balance points so one slice can gate the job.
   {
     name: 'Hybrid ML Pipeline',
     orgId: 'deeporigin',
@@ -200,6 +207,24 @@ export const PRESET_JOBS: Omit<Job, 'id' | 'enqueuedAt' | 'skipCount'>[] = [
     toolPriority: 3,
     resources: multiReq([cpuReq(8, 32), gpuReq(8, 32, 2)]),
     estimatedDuration: 150,
+    ttl: Infinity,
+  },
+  {
+    name: 'Hybrid Inference',
+    orgId: 'org-beta',
+    userPriority: 4,
+    toolPriority: 3,
+    resources: multiReq([cpuReq(4, 16), gpuReq(16, 64, 4)]),
+    estimatedDuration: 90,
+    ttl: Infinity,
+  },
+  {
+    name: 'MD+GPU Refinement',
+    orgId: 'deeporigin',
+    userPriority: 3,
+    toolPriority: 3,
+    resources: multiReq([cpuReq(32, 128), gpuReq(8, 32, 1)]),
+    estimatedDuration: 240,
     ttl: Infinity,
   },
 ];

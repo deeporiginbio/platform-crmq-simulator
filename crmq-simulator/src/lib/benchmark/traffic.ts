@@ -19,7 +19,7 @@
  * This enables reproducible benchmark runs and paired comparisons (§5.5).
  */
 
-import type { Resources, Org, CRMQConfig } from '../types';
+import type { Resources, ResourcesByType, Org } from '../types';
 import { cpuMillisFromVcpu, memoryMiBFromGb } from '../units';
 
 // ── PRNG (Linear Congruential Generator) ──────────────────────────────────
@@ -75,6 +75,13 @@ export interface GeneratedJob {
   userPriority: number;
   toolPriority: number;
   resources: Resources;
+  /**
+   * Optional multi-pool resource request (§1.4 `ResourcesByType`). When
+   * present the DES engine uses this directly and skips single-pool routing;
+   * `resources` is still populated (set to the aggregate across pools) so
+   * existing metrics code that expects the flat shape keeps working.
+   */
+  resourcesByType?: ResourcesByType;
   estimatedDuration: number;
   ttl: number;
   arrivalTime: number;   // sim-time when this job arrives
@@ -102,9 +109,22 @@ export interface MMPPState {
 export interface PeriodicJobTemplate {
   name: string;
   orgId: string;
+  /**
+   * Single-pool resource request. Routed to a pool via the config's
+   * `routeWhen` predicates in the DES engine. Ignored when
+   * `resourcesByType` is set.
+   */
   cpuMillis: number;
   memoryMiB: number;
   gpu: number;
+  /**
+   * Optional multi-pool request (§1.4 platform parity). When present the
+   * job holds capacity in every listed pool simultaneously; both capacity
+   * gates (Gate 2) and org quotas (Gate 1) must pass for each pool slice.
+   * Keys are pool `type` strings (e.g. `"mason"`, `"mason-gpu"`). Takes
+   * precedence over the single-pool `cpuMillis/memoryMiB/gpu` fields.
+   */
+  resourcesByType?: ResourcesByType;
   durationSeconds: number;
   intervalSeconds: number;   // one job every N seconds
   userPriority: number;
@@ -360,18 +380,36 @@ export const generateWorkload = (wc: WorkloadConfig): GeneratedJob[] => {
         const arrivalTime = Math.max(0, t + jitter);
 
         const duration = tpl.durationSeconds;
+        // Aggregate across pools for the flat `resources` field so downstream
+        // metrics (utilization, cost) that read `GeneratedJob.resources`
+        // still see totals. `resourcesByType` carries the per-pool slices
+        // the scheduler actually admits against.
+        let flat: Resources;
+        let byType: ResourcesByType | undefined;
+        if (tpl.resourcesByType) {
+          byType = {};
+          let c = 0, m = 0, g = 0;
+          for (const [pool, slice] of Object.entries(tpl.resourcesByType)) {
+            byType[pool] = { ...slice };
+            c += slice.cpuMillis; m += slice.memoryMiB; g += slice.gpu;
+          }
+          flat = { cpuMillis: c, memoryMiB: m, gpu: g };
+        } else {
+          flat = {
+            cpuMillis: tpl.cpuMillis,
+            memoryMiB: tpl.memoryMiB,
+            gpu: tpl.gpu,
+          };
+        }
         jobs.push({
           name: `${tpl.name} #${++idx}`,
           orgId: tpl.orgId,
           userPriority: tpl.userPriority,
           toolPriority: tpl.toolPriority,
-          resources: {
-            cpuMillis: tpl.cpuMillis,
-            memoryMiB: tpl.memoryMiB,
-            gpu: tpl.gpu,
-          },
+          resources: flat,
+          ...(byType ? { resourcesByType: byType } : {}),
           estimatedDuration: duration,
-          ttl: Infinity,
+          ttl: wc.ttlDefault,
           arrivalTime,
         });
         t += tpl.intervalSeconds;
@@ -393,7 +431,7 @@ export const generateWorkload = (wc: WorkloadConfig): GeneratedJob[] => {
     const name = `${rng.pick(JOB_NAMES)} #${i + 1}`;
     const userPriority = rng.nextInt(1, 5);
     const toolPriority = rng.nextInt(1, 5);
-    const ttl = Infinity;
+    const ttl = wc.ttlDefault;
 
     return {
       name,
@@ -1186,6 +1224,234 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
         duration: 0,
       },
       seed: 10003,
+    },
+  },
+  // ─────────────────────────────────────────────────────────────────────────
+  // R6: Multi-Pool Heavy Hybrid (All Hybrid, 24h)
+  //
+  // 100% multi-pool workload over a 24-hour arrival window, modelled after
+  // full-24h-simulation but every template is hybrid (§1.4 — holds capacity
+  // in BOTH mason and mason-gpu concurrently). Every admission is an AND
+  // across two Gate-1 checks (org quota per pool) and two Gate-2 checks
+  // (pool capacity). Offered load is deliberately configured so two
+  // different per-org Gate-1s persistently queue:
+  //   - Beta runs 131% of its 25% GPU quota → Gate 1 queues on mason-gpu.
+  //   - Gamma runs 126% of its 28% mason quota → Gate 1 queues on mason.
+  //   - DO stays comfortable (42% of its 100% GPU quota).
+  // Arrivals stop at t=24h; Beta's GPU backlog and Gamma's mason backlog
+  // drain at their quota caps afterwards. TTL is Infinity so no evictions
+  // distort the picture — the scenario isolates admission + aging +
+  // reservation-mode behaviour under sustained multi-quota contention.
+  // ─────────────────────────────────────────────────────────────────────────
+  {
+    id: 'multi-pool-overload-pipelines',
+    name: 'R6: Multi-Pool Heavy Hybrid (All Hybrid, 24h)',
+    description:
+      '24-hour 100%-hybrid overload (§1.4), modelled after full-24h-simulation '
+      + 'but with every template multi-pool. DO is comfortable (~42% of its '
+      + 'GPU quota). Beta runs ~31% over its 25% GPU quota, so Beta-hybrid-* '
+      + 'jobs persistently queue at Gate 1 on mason-gpu. Gamma runs ~26% over '
+      + 'its 28% mason quota, so Gamma-hybrid-* jobs persistently queue at '
+      + 'Gate 1 on mason. Every admission is an AND across two Gate-1 checks '
+      + '(one per pool) and two Gate-2 checks (pool capacity). Arrivals stop '
+      + 'at t=24h; Beta and Gamma backlogs drain at their quota caps '
+      + 'afterwards. TTL is Infinity — zero evictions — so the scenario '
+      + 'isolates admission + aging + reservation-mode behaviour under '
+      + 'sustained quota contention.',
+    phase: 5,
+    workloadConfig: {
+      durationSeconds: 86400, // 24h arrival window
+      arrivalPattern: {
+        type: 'periodic_mix',
+        templates: [
+          // ── deeporigin (priority 3, 100%/100% quotas) ────────────────────
+          // DO MolDynamics + GPU refinement — CPU-leaning hybrid.
+          // 900s / 90s = 10 concurrent × (32 mason + 16 gpu-vCPU + 4 GPU)
+          // → 320 mason vCPU, 160 gpu vCPU, 40 GPU.
+          {
+            name: 'DO-hybrid-md',
+            orgId: 'deeporigin',
+            cpuMillis: 0, memoryMiB: 0, gpu: 0,
+            resourcesByType: {
+              'mason': {
+                cpuMillis: cpuMillisFromVcpu(32),
+                memoryMiB: memoryMiBFromGb(128),
+                gpu: 0,
+              },
+              'mason-gpu': {
+                cpuMillis: cpuMillisFromVcpu(16),
+                memoryMiB: memoryMiBFromGb(64),
+                gpu: 4,
+              },
+            },
+            durationSeconds: 900,
+            intervalSeconds: 90,
+            userPriority: 3,
+            toolPriority: 4,
+          },
+          // DO small CPU-prep + GPU-inference pipeline — GPU-leaning hybrid.
+          // 800s / 120s = 6.67 concurrent × (8 mason + 16 gpu-vCPU + 6 GPU)
+          // → 53.3 mason vCPU, 106.7 gpu vCPU, 40 GPU.
+          {
+            name: 'DO-hybrid-pipeline',
+            orgId: 'deeporigin',
+            cpuMillis: 0, memoryMiB: 0, gpu: 0,
+            resourcesByType: {
+              'mason': {
+                cpuMillis: cpuMillisFromVcpu(8),
+                memoryMiB: memoryMiBFromGb(32),
+                gpu: 0,
+              },
+              'mason-gpu': {
+                cpuMillis: cpuMillisFromVcpu(16),
+                memoryMiB: memoryMiBFromGb(64),
+                gpu: 6,
+              },
+            },
+            durationSeconds: 800,
+            intervalSeconds: 120,
+            userPriority: 3,
+            toolPriority: 3,
+          },
+
+          // ── org-beta (priority 2, 28%/25% quotas) ────────────────────────
+          // Beta inference — GPU-heavy hybrid. Offered GPU alone matches Beta's
+          // entire 48-GPU quota, so eval is pure overshoot on Gate 1.
+          // 600s / 100s = 6 concurrent × (8 mason + 8 gpu-vCPU + 8 GPU)
+          // → 48 mason vCPU, 48 gpu vCPU, 48 GPU (= Beta's full GPU quota).
+          {
+            name: 'Beta-hybrid-infer',
+            orgId: 'org-beta',
+            cpuMillis: 0, memoryMiB: 0, gpu: 0,
+            resourcesByType: {
+              'mason': {
+                cpuMillis: cpuMillisFromVcpu(8),
+                memoryMiB: memoryMiBFromGb(32),
+                gpu: 0,
+              },
+              'mason-gpu': {
+                cpuMillis: cpuMillisFromVcpu(8),
+                memoryMiB: memoryMiBFromGb(32),
+                gpu: 8,
+              },
+            },
+            durationSeconds: 600,
+            intervalSeconds: 100,
+            userPriority: 3,
+            toolPriority: 4,
+          },
+          // Beta eval — balanced hybrid. Drives Beta 31% over GPU quota.
+          // 750s / 150s = 5 concurrent × (12 mason + 8 gpu-vCPU + 3 GPU)
+          // → 60 mason vCPU, 40 gpu vCPU, 15 GPU.
+          {
+            name: 'Beta-hybrid-eval',
+            orgId: 'org-beta',
+            cpuMillis: 0, memoryMiB: 0, gpu: 0,
+            resourcesByType: {
+              'mason': {
+                cpuMillis: cpuMillisFromVcpu(12),
+                memoryMiB: memoryMiBFromGb(48),
+                gpu: 0,
+              },
+              'mason-gpu': {
+                cpuMillis: cpuMillisFromVcpu(8),
+                memoryMiB: memoryMiBFromGb(32),
+                gpu: 3,
+              },
+            },
+            durationSeconds: 750,
+            intervalSeconds: 150,
+            userPriority: 2,
+            toolPriority: 3,
+          },
+
+          // ── org-gamma (priority 1, 28%/25% quotas) ───────────────────────
+          // Gamma training — mason-heavy hybrid. Gamma has only a 382-vCPU
+          // mason quota, so this template alone uses 56% of that.
+          // 1200s / 90s = 13.33 concurrent × (16 mason + 8 gpu-vCPU + 2 GPU)
+          // → 213 mason vCPU, 107 gpu vCPU, 26.7 GPU.
+          {
+            name: 'Gamma-hybrid-train',
+            orgId: 'org-gamma',
+            cpuMillis: 0, memoryMiB: 0, gpu: 0,
+            resourcesByType: {
+              'mason': {
+                cpuMillis: cpuMillisFromVcpu(16),
+                memoryMiB: memoryMiBFromGb(64),
+                gpu: 0,
+              },
+              'mason-gpu': {
+                cpuMillis: cpuMillisFromVcpu(8),
+                memoryMiB: memoryMiBFromGb(32),
+                gpu: 2,
+              },
+            },
+            durationSeconds: 1200,
+            intervalSeconds: 90,
+            userPriority: 2,
+            toolPriority: 3,
+          },
+          // Gamma analysis — CPU-heavy hybrid. Drives Gamma 26% over its
+          // mason quota when combined with train.
+          // 1000s / 90s = 11.11 concurrent × (24 mason + 4 gpu-vCPU + 1 GPU)
+          // → 267 mason vCPU, 44.4 gpu vCPU, 11.1 GPU.
+          {
+            name: 'Gamma-hybrid-analysis',
+            orgId: 'org-gamma',
+            cpuMillis: 0, memoryMiB: 0, gpu: 0,
+            resourcesByType: {
+              'mason': {
+                cpuMillis: cpuMillisFromVcpu(24),
+                memoryMiB: memoryMiBFromGb(96),
+                gpu: 0,
+              },
+              'mason-gpu': {
+                cpuMillis: cpuMillisFromVcpu(4),
+                memoryMiB: memoryMiBFromGb(16),
+                gpu: 1,
+              },
+            },
+            durationSeconds: 1000,
+            intervalSeconds: 90,
+            userPriority: 1,
+            toolPriority: 2,
+          },
+        ],
+        // Pool demand (steady-state, 100% hybrid, full-24h-simulation pattern):
+        //   mason:     320 + 53 + 48 + 60 + 213 + 267 =   961 vCPU (70% of 1,364)
+        //   mason-gpu: 160 + 107 + 48 + 40 + 107 + 44 =   506 vCPU (66% of   768)
+        //   GPU:        40 +  40 + 48 + 15 +  27 + 11 =   181 GPU  (94% of   192)
+        // Per-org GPU demand vs 25% quota (48 GPU for Beta & Gamma):
+        //   DO    =  80 GPU (100% quota = 192 — comfortable at 42%)
+        //   Beta  =  63 GPU (131% of 48 — Gate 1 persistently queues on mason-gpu)
+        //   Gamma =  38 GPU ( ≤ 48 — Gamma pool-gated, not GPU-quota-gated)
+        // Per-org mason vCPU demand vs 28% quota (382 for Beta & Gamma):
+        //   DO    = 373 vCPU (100% quota = 1,364 — comfortable at 27%)
+        //   Beta  = 108 vCPU ( ≤ 382 — OK)
+        //   Gamma = 480 vCPU (126% of 382 — Gate 1 persistently queues on mason)
+        // Per-org mason-gpu vCPU demand vs 25% quota (192 for Beta & Gamma):
+        //   DO    = 267 vCPU (100% quota = 768 — OK)
+        //   Beta  =  88 vCPU ( ≤ 192 — OK)
+        //   Gamma = 151 vCPU ( ≤ 192 — OK)
+        // Effective running (admission-capped at Gate 1):
+        //   DO     80 GPU / 373 mason (unchanged — under quotas)
+        //   Beta   48 GPU / 108 mason (GPU quota caps at 48; excess 15 GPU queues)
+        //   Gamma  38 GPU / 382 mason (mason quota caps at 382; excess 98 vCPU queues)
+        //   Running GPU: 80+48+38 = 166 of 192 (86% util, headroom for bursts)
+        //   Running mason: 373+108+382 = 863 of 1,364 (63% util)
+        // Arrivals over 24h window:
+        //   DO-hybrid-md         86400/90 =   960
+        //   DO-hybrid-pipeline   86400/120 =   720
+        //   Beta-hybrid-infer    86400/100 =   864
+        //   Beta-hybrid-eval     86400/150 =   576
+        //   Gamma-hybrid-train   86400/90  =   960
+        //   Gamma-hybrid-analys  86400/90  =   960
+        //   Total                          = 5,040 jobs, 100% multi-pool
+        // After arrivals stop at t=24h, Beta GPU backlog and Gamma mason
+        // backlog drain at their quota caps. Expected total drain: ~28-32h.
+      },
+      sizeDistribution: { type: 'fixed', cpu: 0, memory: 0, gpu: 0, duration: 0 },
+      seed: 10007,
     },
   },
 
