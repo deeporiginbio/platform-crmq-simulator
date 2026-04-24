@@ -18,8 +18,6 @@ import {
   type CompletedJob,
   type EvictedJob,
   type CRMQConfig,
-  type ScoringConfig,
-  type SchedulerConfig,
   type ResourcePool,
   type OrgUsageMap,
   type SchedulerResult,

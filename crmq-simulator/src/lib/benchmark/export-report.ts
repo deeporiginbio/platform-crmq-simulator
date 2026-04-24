@@ -20,8 +20,6 @@ import type {
 import type {
   AggregatedMetrics,
   ConfidenceInterval,
-  PairedTestResult,
-  ScenarioComparison,
 } from './statistics';
 import type {
   ScenarioPreset,
@@ -29,6 +27,21 @@ import type {
   JobSizeDistribution,
 } from './traffic';
 import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
+import type { jsPDF } from 'jspdf';
+import type { CellHookData, UserOptions } from 'jspdf-autotable';
+
+// jspdf-autotable patches jsPDF at runtime; the types don't include these members.
+type JsPDFWithAutoTable = jsPDF & {
+  autoTable: (options: UserOptions) => void;
+  lastAutoTable: { finalY: number };
+};
+
+// Plotly's Data/Layout types are tagged unions with string-literal discriminators.
+// Our plain object-literal traces widen `type: 'bar'` to `string`; we assert on return.
+type ChartBundle = {
+  traces: Plotly.Data[];
+  layout: Partial<Plotly.Layout>;
+};
 
 // Re-use the store type locally
 interface MultiScenarioEntry {
@@ -331,7 +344,7 @@ const academicTableStyle = {
     fontStyle: 'bold' as const,
     lineWidth: 0,
   },
-  didDrawCell: (data: any) => {
+  didDrawCell: (data: CellHookData) => {
     const doc = data.doc;
     if (data.section === 'head') {
       // 2px top border on header
@@ -392,7 +405,7 @@ async function renderChartImage(
   try {
     await Plotly.default.newPlot(
       div,
-      traces as any,
+      traces as Plotly.Data[],
       {
         ...layout,
         width,
@@ -419,7 +432,7 @@ async function renderChartImage(
 
 function buildRadarTraces(
   scenarios: ScenarioResult[],
-): { traces: any[]; layout: any } {
+): { traces: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const axisLabels = [
     'Throughput', 'Fairness', 'Mean Wait',
     'Tail Wait (P95)', 'CPU Util',
@@ -521,14 +534,14 @@ function buildRadarTraces(
     },
     showlegend: true,
   };
-  return { traces, layout };
+  return { traces, layout } as ChartBundle;
 }
 
 function buildBarTraces(
   scenarios: ScenarioResult[],
   getter: string,
   yTitle: string,
-): { traces: any[]; layout: any } {
+): { traces: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const traces = scenarios.map((s, i) => {
     const ci = s.aggregated[
       getter as keyof AggregatedMetrics
@@ -568,14 +581,14 @@ function buildBarTraces(
       },
       xaxis: { tickfont: { size: 10 } },
     },
-  };
+  } as ChartBundle;
 }
 
 function buildGroupedWaitTraces(
   scenarios: ScenarioResult[],
   metrics: Array<{ label: string; key: string }>,
   logScale: boolean,
-): { traces: any[]; layout: any } {
+): { traces: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const traces = scenarios.flatMap((s, i) =>
     metrics.map((m, mi) => {
       const ci = s.aggregated[
@@ -631,13 +644,13 @@ function buildGroupedWaitTraces(
       },
       yaxis,
     },
-  };
+  } as ChartBundle;
 }
 
 function buildOrgWaitTraces(
   scenarios: ScenarioResult[],
   orgIds: string[],
-): { traces: any[]; layout: any } {
+): { traces: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const traces = scenarios.map((s, i) => {
     const yVals = orgIds.map((oid) =>
       Number(
@@ -681,13 +694,13 @@ function buildOrgWaitTraces(
       },
       xaxis: { tickfont: { size: 10 } },
     },
-  };
+  } as ChartBundle;
 }
 
 function buildUtilTraces(
   scenarios: ScenarioResult[],
   poolTypes: string[],
-): { traces: any[]; layout: any } {
+): { traces: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const cats: string[] = [];
   for (const pt of poolTypes) {
     cats.push(`${pt} CPU`);
@@ -745,7 +758,7 @@ function buildUtilTraces(
       },
       xaxis: { tickfont: { size: 10 } },
     },
-  };
+  } as ChartBundle;
 }
 
 // ── Helper functions for academic report ──────
@@ -824,7 +837,7 @@ const generateConclusion = (
 };
 
 const addSectionHeader = (
-  doc: any,
+  doc: jsPDF,
   level: 1 | 2 | 3,
   text: string,
   y: number,
@@ -861,7 +874,7 @@ const addSectionHeader = (
 };
 
 const addFigureCaption = (
-  doc: any,
+  doc: jsPDF,
   figNum: number,
   caption: string,
   y: number,
@@ -897,13 +910,13 @@ export const exportPDFReport = async (
   const { formulaNames, bestFormulas } = tally;
   const ts = new Date().toISOString();
 
-  const totalWallMs = entries.reduce(
+  const _totalWallMs = entries.reduce(
     (acc, e) =>
       acc +
       (e.result.completedAt - e.result.startedAt),
     0,
   );
-  const totalRuns = entries.reduce(
+  const _totalRuns = entries.reduce(
     (acc, e) =>
       acc +
       e.result.scenarios.length *
@@ -1055,14 +1068,14 @@ export const exportPDFReport = async (
     ];
   });
 
-  (doc as any).autoTable({
+  (doc as JsPDFWithAutoTable).autoTable({
     startY: y,
     margin: { left: margin, right: margin },
     head: [['Rank', 'Formula', 'Wins']],
     body: rankRows,
     ...academicTableStyle,
   });
-  y = (doc as any).lastAutoTable.finalY + 8;
+  y = (doc as JsPDFWithAutoTable).lastAutoTable.finalY + 8;
 
   // Winner Matrix
   ensureSpace(20);
@@ -1086,14 +1099,14 @@ export const exportPDFReport = async (
     }),
   ]);
 
-  (doc as any).autoTable({
+  (doc as JsPDFWithAutoTable).autoTable({
     startY: y,
     margin: { left: margin, right: margin },
     head: [matrixHead],
     body: matrixBody,
     ...academicTableStyle,
   });
-  y = (doc as any).lastAutoTable.finalY + 8;
+  y = (doc as JsPDFWithAutoTable).lastAutoTable.finalY + 8;
 
   // ── Methodology ──────────────────────────────
   y = addSectionHeader(
@@ -1142,14 +1155,14 @@ export const exportPDFReport = async (
     wkRows.push(['Random Seed', String(wc.seed)]);
 
     doc.setTextColor(0);
-    (doc as any).autoTable({
+    (doc as JsPDFWithAutoTable).autoTable({
       startY: y,
       margin: { left: margin, right: margin },
       head: [['Parameter', 'Value']],
       body: wkRows,
       ...academicTableStyle,
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = (doc as JsPDFWithAutoTable).lastAutoTable.finalY + 6;
   }
 
   // ── Results Section ────────────────────────
@@ -1393,7 +1406,7 @@ export const exportPDFReport = async (
         ];
       });
 
-      (doc as any).autoTable({
+      (doc as JsPDFWithAutoTable).autoTable({
         startY: y,
         margin: { left: margin, right: margin },
         head: [[
@@ -1403,7 +1416,7 @@ export const exportPDFReport = async (
         body: cmpRows,
         ...academicTableStyle,
       });
-      y = (doc as any).lastAutoTable.finalY + 6;
+      y = (doc as JsPDFWithAutoTable).lastAutoTable.finalY + 6;
     }
   }
 
@@ -1457,13 +1470,13 @@ export const exportMarkdownReport = (
     totalContests,
   } = tally;
 
-  const totalWallMs = entries.reduce(
+  const _totalWallMs = entries.reduce(
     (acc, e) =>
       acc +
       (e.result.completedAt - e.result.startedAt),
     0,
   );
-  const totalRuns = entries.reduce(
+  const _totalRuns = entries.reduce(
     (acc, e) =>
       acc +
       e.result.scenarios.length *
@@ -1586,8 +1599,7 @@ export const exportMarkdownReport = (
   // Per-scenario details
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
-    const { result, preset } = entry;
-    const scenarios = result.scenarios;
+    const { preset } = entry;
     const wc = preset.workloadConfig;
 
     lines.push(

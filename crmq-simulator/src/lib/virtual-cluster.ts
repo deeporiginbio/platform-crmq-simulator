@@ -205,7 +205,6 @@ export const predict = (
     // Record predictions for newly dispatched jobs
     const afterCount = simQueue.length;
     if (afterCount < beforeCount) {
-      const queueIds = new Set(simQueue.map(j => j.id));
       for (const aj of simActive) {
         if (predictions[aj.id] && predictions[aj.id].status === 'WAITING') {
           predictions[aj.id] = {

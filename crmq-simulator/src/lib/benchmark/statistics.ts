@@ -13,7 +13,7 @@
  *   - Multi-run aggregation
  */
 
-import type { ComputedMetrics, OrgMetrics } from './metrics';
+import type { ComputedMetrics } from './metrics';
 
 // ── Warm-Up Detection ─────────────────────────────────────────────────────
 

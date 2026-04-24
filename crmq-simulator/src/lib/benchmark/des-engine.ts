@@ -857,13 +857,7 @@ const desBulkDispatch = (
 const processBatch = (
   ctx: DESContext,
 ): boolean => {
-  const {
-    config,
-    orgs,
-    scoringFn,
-    state,
-    eq,
-  } = ctx;
+  const { state, eq } = ctx;
 
   if (eq.size === 0) return false;
 

@@ -6,12 +6,11 @@
  * Exports benchmark results in CSV, JSON, and Markdown formats.
  */
 
-import type { BenchmarkSuiteResult, ScenarioResult } from './runner';
+import type { BenchmarkSuiteResult } from './runner';
 import type {
   AggregatedMetrics,
   ConfidenceInterval,
   PairedTestResult,
-  ScenarioComparison,
 } from './statistics';
 import type { ScenarioPreset, ArrivalPattern, JobSizeDistribution } from './traffic';
 import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';

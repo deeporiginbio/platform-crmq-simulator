@@ -50,7 +50,7 @@ const sigBadge = (test: PairedTestResult) => {
   return <Badge size="xs" variant="filled" color={color}>{test.effectLabel} (d={fmt(test.cohensD)})</Badge>;
 };
 
-const winnerBadge = (winner: string, nameA: string, nameB: string) => {
+const winnerBadge = (winner: string, nameA: string, _nameB: string) => {
   if (winner === 'tie') return <Badge size="xs" variant="outline" color="grey">Tie</Badge>;
   const color = winner === nameA ? 'indigo' : 'green';
   // Truncate long names

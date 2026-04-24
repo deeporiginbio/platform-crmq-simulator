@@ -16,7 +16,7 @@
  *     { type: 'error', error }
  */
 
-import type { Org, CRMQConfig } from '../types';
+import type { Org } from '../types';
 import { runBenchmarkSuite } from '../benchmark/runner';
 import type {
   BenchmarkSuiteConfig,
@@ -24,7 +24,6 @@ import type {
   ProgressCallback,
   BenchmarkScenarioConfig,
 } from '../benchmark/runner';
-import { getFormula } from '../benchmark/scoring';
 import {
   hydrateConfig,
   type SerializableConfig,

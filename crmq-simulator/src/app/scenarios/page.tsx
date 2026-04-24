@@ -318,7 +318,7 @@ const ArrivalInfo = ({ pattern }: { pattern: ArrivalPattern }) => {
 
 // ── Size Distribution Description ───────────────────────────────────────────
 
-const SizeInfo = ({ dist, preset }: { dist: JobSizeDistribution; preset: ScenarioPreset }) => {
+const SizeInfo = ({ dist, preset: _preset }: { dist: JobSizeDistribution; preset: ScenarioPreset }) => {
   switch (dist.type) {
     case 'uniform':
       return (

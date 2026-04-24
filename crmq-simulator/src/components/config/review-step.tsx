@@ -4,7 +4,7 @@
 
 import { useMemo } from 'react';
 import { Alert, Badge, Box, Group, Stack, Table, Text } from '@mantine/core';
-import type { Org, Resources } from '@/lib/types';
+import type { Org } from '@/lib/types';
 import type { SchedulingPolicyConfig, ValidationMessage } from '@/lib/config/types';
 import { MEMORY_GB_PER_VCPU, VCPU_PER_GPU, getQuotaLabel } from '@/lib/config/types';
 import { vcpuFromCpuMillis, gbFromMemoryMiB } from '@/lib/units';

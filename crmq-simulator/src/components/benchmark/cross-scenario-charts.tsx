@@ -15,14 +15,13 @@
  */
 
 import { useMemo } from 'react';
-import { Box, Group, Stack, Text } from '@mantine/core';
+import { Box, Stack, Text } from '@mantine/core';
 import dynamic from 'next/dynamic';
 import type { PlotParams } from 'react-plotly.js';
 import type { MultiScenarioEntry } from
   '@/lib/benchmark-store';
 import type {
   AggregatedMetrics,
-  ConfidenceInterval,
 } from '@/lib/benchmark';
 import {
   colorOf,
@@ -148,17 +147,6 @@ export const CrossScenarioCharts = (
     () => entries.map((e) => e.preset.name),
     [entries],
   );
-
-  if (
-    formulaNames.length === 0 ||
-    entries.length === 0
-  ) {
-    return (
-      <Text size="sm" c="dimmed">
-        No cross-scenario data to chart.
-      </Text>
-    );
-  }
 
   // ──────────────────────────────────────────────────────
   // 1. Meta Radar Scorecard
@@ -469,6 +457,17 @@ export const CrossScenarioCharts = (
   }, [entries, formulaNames]);
 
   // ── Render ──────────────────────────────────────────────
+  if (
+    formulaNames.length === 0 ||
+    entries.length === 0
+  ) {
+    return (
+      <Text size="sm" c="dimmed">
+        No cross-scenario data to chart.
+      </Text>
+    );
+  }
+
   return (
     <Stack gap="lg">
       {/* 1. Meta Radar */}
@@ -482,9 +481,9 @@ export const CrossScenarioCharts = (
         }
       >
         <Plot
-          data={radarTraces as any}
+          data={radarTraces as PlotParams["data"]}
           layout={radarLayout}
-          config={PLOTLY_CONFIG as any}
+          config={PLOTLY_CONFIG as PlotParams["config"]}
           style={{ width: '100%' }}
         />
       </ChartCard>
@@ -505,9 +504,9 @@ export const CrossScenarioCharts = (
             }
           >
             <Plot
-              data={traces as any}
+              data={traces as PlotParams["data"]}
               layout={layout}
-              config={PLOTLY_CONFIG as any}
+              config={PLOTLY_CONFIG as PlotParams["config"]}
               style={{ width: '100%' }}
             />
           </ChartCard>
@@ -524,9 +523,9 @@ export const CrossScenarioCharts = (
         }
       >
         <Plot
-          data={winRateTraces.traces as any}
+          data={winRateTraces.traces as PlotParams["data"]}
           layout={winRateTraces.layout}
-          config={PLOTLY_CONFIG as any}
+          config={PLOTLY_CONFIG as PlotParams["config"]}
           style={{ width: '100%' }}
         />
       </ChartCard>

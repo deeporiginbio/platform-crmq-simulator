@@ -98,7 +98,7 @@ const computeBreakdown = (
     case 'balanced_composite': {
       const wPriority = 0.35;
       const wAging = 0.25;
-      const wLoad = 0.20;
+      const _wLoad = 0.20;
       const wCpuHrs = 0.20;
       const AGING_HORIZON = 21600;
       const AGING_EXPONENT = 2;

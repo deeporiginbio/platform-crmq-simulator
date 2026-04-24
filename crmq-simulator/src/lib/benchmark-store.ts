@@ -17,7 +17,6 @@ import {
   SCENARIO_PRESETS,
 } from './benchmark';
 import type {
-  BenchmarkSuiteConfig,
   BenchmarkSuiteResult,
   ScenarioPreset,
 } from './benchmark';

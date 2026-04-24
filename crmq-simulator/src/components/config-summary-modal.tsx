@@ -8,7 +8,6 @@ import type { CRMQConfig, Org, Resources } from '@/lib/types';
 import {
   MEMORY_GB_PER_VCPU,
   VCPU_PER_GPU,
-  getQuotaLabel,
   resolvePercentToResources,
 } from '@/lib/config/types';
 import {
@@ -140,7 +139,6 @@ export const ConfigSummaryModal = ({ opened, onClose, cfg, orgs }: ConfigSummary
 
           {cfg.cluster.pools.map((pool) => {
             const isCpuPool = pool.quotaType === 'cpu';
-            const primaryLabel = getQuotaLabel(pool.quotaType);
             const capacityParts = isCpuPool
               ? `${fmtResource(vcpuFromCpuMillis(pool.total.cpuMillis))} CPU, ${fmtResource(gbFromMemoryMiB(pool.total.memoryMiB))} GB`
               : `${fmtResource(pool.total.gpu)} GPU, ${fmtResource(vcpuFromCpuMillis(pool.total.cpuMillis))} CPU, ${fmtResource(gbFromMemoryMiB(pool.total.memoryMiB))} GB`;

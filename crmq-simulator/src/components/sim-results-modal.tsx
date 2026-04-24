@@ -141,7 +141,7 @@ export const SimResultsModal = ({
   completed,
   evicted,
   orgs,
-  cfg,
+  cfg: _cfg,
   simTime,
 }: SimResultsModalProps) => {
   const metrics = useMemo(

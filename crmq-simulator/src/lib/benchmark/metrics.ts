@@ -15,8 +15,7 @@
  *   Cost        — cost-per-job (placeholder; requires cost model)
  */
 
-import type { Resources, CRMQConfig, Org, OrgUsageMap } from '../types';
-import { vcpuFromCpuMillis, gbFromMemoryMiB } from '../units';
+import type { Resources, CRMQConfig, Org } from '../types';
 
 // ── Raw Event Types (what the DES engine records) ──────────────────────────
 

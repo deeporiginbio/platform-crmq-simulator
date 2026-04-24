@@ -337,11 +337,11 @@ const NoParamsInfo = ({ message }: { message: string }) => (
 export const FormulaStep = ({
   formulaConfig,
   schedulerConfig,
-  ttlDefault,
+  ttlDefault: _ttlDefault,
   onSetFormulaType,
   onSetFormulaParam,
   onSetSchedulerParam,
-  onSetTtlDefault,
+  onSetTtlDefault: _onSetTtlDefault,
 }: FormulaStepProps) => {
   return (
     <Stack gap="lg" mt="md">

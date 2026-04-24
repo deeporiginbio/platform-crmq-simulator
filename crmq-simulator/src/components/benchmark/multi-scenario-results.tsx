@@ -19,17 +19,14 @@ import {
   Table,
   Tabs,
   Text,
-  ThemeIcon,
 } from '@mantine/core';
 import type { MultiScenarioEntry } from
   '@/lib/benchmark-store';
 import type {
   AggregatedMetrics,
-  BenchmarkSuiteResult,
   ConfidenceInterval,
   PairedTestResult,
   ScenarioComparison,
-  ScenarioPreset,
   ScenarioResult,
 } from '@/lib/benchmark';
 import {
@@ -719,7 +716,7 @@ const CrossScenarioSummary = (
                     <Table.Td key={m.key}>
                       <Stack gap={0}>
                         {topFormulas.map(
-                          ([fn, w]) => (
+                          ([fn, _w]) => (
                             <Group
                               key={fn}
                               gap={4}
@@ -1495,7 +1492,7 @@ const ComparisonTable = (
   const winnerBadge = (
     winner: string,
     nameA: string,
-    nameB: string,
+    _nameB: string,
   ) => {
     if (winner === 'tie') {
       return (

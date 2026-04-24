@@ -20,9 +20,9 @@ import { runDES, runDESAsync } from './des-engine';
 import type { DESConfig, DESResult } from './des-engine';
 import { computeMetrics } from './metrics';
 import { getFormula } from './scoring';
-import type { ComputedMetrics, UtilizationSample } from './metrics';
+import type { ComputedMetrics } from './metrics';
 import { generateWorkload } from './traffic';
-import type { WorkloadConfig, ArrivalPattern, JobSizeDistribution, ScenarioPreset, GeneratedJob } from './traffic';
+import type { ArrivalPattern, JobSizeDistribution, GeneratedJob } from './traffic';
 import { detectWarmUp, aggregateMetrics, compareScenarios } from './statistics';
 import type { AggregatedMetrics, ScenarioComparison } from './statistics';
 

@@ -8,12 +8,10 @@ import dynamic from 'next/dynamic';
 import type { PlotParams } from 'react-plotly.js';
 import type {
   BenchmarkSuiteResult,
-  ScenarioResult,
   AggregatedMetrics,
   ConfidenceInterval,
 } from '@/lib/benchmark';
 import {
-  FORMULA_COLORS,
   colorOf,
   SHARED_LAYOUT,
   PLOTLY_CONFIG,
@@ -27,22 +25,6 @@ const Plot = dynamic(
   ),
   { ssr: false },
 ) as React.ComponentType<PlotParams>;
-
-const ciError = (
-  scenarios: ScenarioResult[],
-  getter: (a: AggregatedMetrics) => ConfidenceInterval,
-  scale = 1,
-): { low: number[]; high: number[] } => {
-  const low: number[] = [];
-  const high: number[] = [];
-  for (const s of scenarios) {
-    const ci = getter(s.aggregated);
-    const mean = ci.mean * scale;
-    low.push(Math.max(0, mean - ci.low * scale));
-    high.push(ci.high * scale - mean);
-  }
-  return { low, high };
-};
 
 // ── Chart Wrapper ──────────────────────────────────────────────
 const ChartCard = ({
@@ -81,16 +63,6 @@ interface Props {
 
 export const BenchmarkCharts = ({ result }: Props) => {
   const scenarios = result.scenarios;
-  const names = scenarios.map((s) => s.scenarioName);
-  const shortNames = names.map((n) => truncName(n));
-
-  if (scenarios.length === 0) {
-    return (
-      <Text size="sm" c="dimmed">
-        No scenario data to chart.
-      </Text>
-    );
-  }
 
   // ────────────────────────────────────────────────────────────
   // 1. Throughput with 95% CI error bars
@@ -419,10 +391,13 @@ export const BenchmarkCharts = ({ result }: Props) => {
   // ────────────────────────────────────────────────────────────
   // Existing charts migrated: Per-Org Wait, Utilization
   // ────────────────────────────────────────────────────────────
-  const orgIds =
-    scenarios.length > 0
-      ? Object.keys(scenarios[0].aggregated.orgMetrics)
-      : [];
+  const orgIds = useMemo(
+    () =>
+      scenarios.length > 0
+        ? Object.keys(scenarios[0].aggregated.orgMetrics)
+        : [],
+    [scenarios],
+  );
 
   const orgWaitTraces = useMemo(() => {
     return scenarios.map((s, i) => ({
@@ -465,10 +440,13 @@ export const BenchmarkCharts = ({ result }: Props) => {
     xaxis: { tickfont: { size: 10 } },
   };
 
-  const poolTypes =
-    scenarios.length > 0
-      ? Object.keys(scenarios[0].aggregated.utilization)
-      : [];
+  const poolTypes = useMemo(
+    () =>
+      scenarios.length > 0
+        ? Object.keys(scenarios[0].aggregated.utilization)
+        : [],
+    [scenarios],
+  );
 
   const utilTraces = useMemo(() => {
     const categories: string[] = [];
@@ -527,6 +505,14 @@ export const BenchmarkCharts = ({ result }: Props) => {
   };
 
   // ── Render ───────────────────────────────────────────────────
+  if (scenarios.length === 0) {
+    return (
+      <Text size="sm" c="dimmed">
+        No scenario data to chart.
+      </Text>
+    );
+  }
+
   return (
     <Stack gap="lg">
       {/* 4. Radar Scorecard — top-level overview */}
@@ -539,7 +525,7 @@ export const BenchmarkCharts = ({ result }: Props) => {
         }
       >
         <Plot
-          data={radarTraces as any}
+          data={radarTraces as PlotParams["data"]}
           layout={radarLayout}
           config={PLOTLY_CONFIG}
           style={{ width: '100%' }}
@@ -555,7 +541,7 @@ export const BenchmarkCharts = ({ result }: Props) => {
         }
       >
         <Plot
-          data={throughputTraces as any}
+          data={throughputTraces as PlotParams["data"]}
           layout={throughputLayout}
           config={PLOTLY_CONFIG}
           style={{ width: '100%' }}
@@ -572,7 +558,7 @@ export const BenchmarkCharts = ({ result }: Props) => {
           }
         >
           <Plot
-            data={fairnessTraces as any}
+            data={fairnessTraces as PlotParams["data"]}
             layout={fairnessLayout}
             config={PLOTLY_CONFIG}
             style={{ width: '100%' }}
@@ -590,7 +576,7 @@ export const BenchmarkCharts = ({ result }: Props) => {
           }
         >
           <Plot
-            data={typicalWaitTraces as any}
+            data={typicalWaitTraces as PlotParams["data"]}
             layout={typicalWaitLayout}
             config={PLOTLY_CONFIG}
             style={{ width: '100%' }}
@@ -605,7 +591,7 @@ export const BenchmarkCharts = ({ result }: Props) => {
           }
         >
           <Plot
-            data={tailWaitTraces as any}
+            data={tailWaitTraces as PlotParams["data"]}
             layout={tailWaitLayout}
             config={PLOTLY_CONFIG}
             style={{ width: '100%' }}
@@ -624,7 +610,7 @@ export const BenchmarkCharts = ({ result }: Props) => {
           }
         >
           <Plot
-            data={orgWaitTraces as any}
+            data={orgWaitTraces as PlotParams["data"]}
             layout={orgWaitLayout}
             config={PLOTLY_CONFIG}
             style={{ width: '100%' }}
@@ -642,7 +628,7 @@ export const BenchmarkCharts = ({ result }: Props) => {
           }
         >
           <Plot
-            data={utilTraces as any}
+            data={utilTraces as PlotParams["data"]}
             layout={utilLayout}
             config={PLOTLY_CONFIG}
             style={{ width: '100%' }}
